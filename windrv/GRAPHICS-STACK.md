@@ -227,6 +227,7 @@ Satu kolom satu tahap, satu baris satu bukti.
 | Tahap | Isi | Definisi selesai (bisa diuji) |
 | --- | --- | --- |
 | U0 | `libmali_umd` (winsys) | test umd: open→caps→BO→submit→wait hijau di tablet |
+| U0b | `mali_jc` job-chain builder | unit test byte-layout hijau **di mesin dev** (tanpa GPU) |
 | V1 | ICD: instance/device/queue | `vulkaninfo` melihat "Mali-G57 MC2" + 1 queue family |
 | V2 | ICD: memory/buffer | `vkAllocateMemory` menghasilkan BO, map, tulis dari CPU, terbaca GPU |
 | V3 | ICD: submit + fence | `vkCmdFillBuffer` (job WRITE_VALUE) + `vkWaitForFences` hijau |
@@ -249,9 +250,13 @@ windrv/
   WDDM-PATH.md             jalur "Windows mengenali Mali"
   umd/                     user-mode driver (kita)
     include/mali_umd.h     API winsys (publik, dipakai ICD)
+    include/mali_jc.h      builder job-chain (encoding descriptor JM)
     src/mali_umd.c         implementasi di atas IOCTL ABI v2
+    src/mali_jc.c          builder, murni C (host + ARM64)
     src/mali_umd_test.c    uji round-trip (CRT-free, seperti malitest)
-    tools/build-umd.ps1    build test (dan lib) untuk ARM64
+    tools/build-umd.ps1    build test untuk ARM64
+    tools/jc_test.c        unit test byte-layout builder (jalan di host)
+    tools/build-jc-test.ps1 build + jalankan unit test itu di mesin ini
     vulkan/                ICD Vulkan (Jalur A)
       include/             header internal
       src/                 entry point loader + implementasi inti

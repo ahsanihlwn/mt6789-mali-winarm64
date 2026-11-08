@@ -24,9 +24,13 @@ via this ICD / Mesas PanVK) is written out in
 ```
 umd/
   include/mali_umd.h        winsys API (one source of truth: includes the KMD ABI)
+  include/mali_jc.h         job-chain builder API (JM descriptor encoding)
   src/mali_umd.c            winsys implementation (CRT-free, kernel32 + setupapi)
+  src/mali_jc.c             job-chain builder (pure C: builds for host and ARM64)
   src/mali_umd_test.c       round-trip test: open -> BO -> job -> close
   tools/build-umd.ps1       builds build\mali_umd_test.exe
+  tools/jc_test.c           host unit test for the builder byte layout
+  tools/build-jc-test.ps1   builds + runs that test on this (x64) machine
   vulkan/
     include/mali_vk.h       internal ICD types
     src/icd_entry.c         Khronos loader interface + entry-point resolution
@@ -46,6 +50,7 @@ Everything builds to `windrv/umd/build/` (git-ignored).
 ```powershell
 cd windrv\umd
 .\tools\build-umd.ps1            # winsys + test, no external dependencies
+.\tools\build-jc-test.ps1        # host (x64) unit test for the chain builder
 
 cd vulkan
 .\tools\fetch-deps.ps1           # needs git + network, once
@@ -95,6 +100,20 @@ addressable by the GPU. A single contiguous BO is capped at 256 MB by the KMD.
 
 `MaliUmdEnumerate` lists present device interface paths; `MaliUmdOpen` picks the
 first. The test reports the version, caps, and a BO + null-job round trip.
+
+## Job-chain builder (`mali_jc.h`)
+
+The JM descriptor encoding — 32-byte header, payload at +32, **128-byte stride**,
+1-based `job_index`, `next_job` linkage — lives in one place: `MaliJcInit`,
+`MaliJcNull`, `MaliJcCacheFlush`, `MaliJcWriteValue` / `MaliJcWriteValueZero`,
+`MaliJcHead`. It is pure C (no OS or KMD header), so it builds for ARM64 **and**
+for the host.
+
+That split is the point: `tools/jc_test.c` is a **host unit test** that checks the
+byte layout — header words, the `next_job` chain, the 64-bit address split, and
+capacity limits — right here on the development machine, no GPU needed. Run it
+with `tools\build-jc-test.ps1`. One tested encoder is shared by the ICD and,
+later, by the PanVK backend.
 
 ## Vulkan ICD (Jalur A)
 

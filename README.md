@@ -33,6 +33,7 @@ driver only ever owns the GPU core itself.
 | Job chains (multiple linked jobs) | ✅ 128-byte descriptor alignment |
 | Interrupt delivery | ⚠️ polling fallback (no ACPI IRQ resource yet) |
 | UMD winsys `windrv/umd` (IOCTL ABI v2 wrapper) | ✅ builds ARM64, CRT-free |
+| Job-chain builder `mali_jc` + host unit test | ✅ 26/26 checks pass on x64 |
 | Vulkan ICD `windrv/umd/vulkan` | ⚠️ loader interface, instance/device, memory, buffers, fill/fence — no shaders |
 | Vulkan ICD (Mesa PanVK port, render) | ❌ not started |
 | D3D12 / DXVK / vkd3d-proton path | ❌ depends on a shader-capable ICD |
@@ -162,6 +163,7 @@ The UMD winsys needs nothing beyond the same toolchain:
 ```powershell
 cd windrv\umd
 .\tools\build-umd.ps1            # build\mali_umd_test.exe
+.\tools\build-jc-test.ps1        # host (x64) unit test for the job-chain builder
 ```
 
 The Vulkan ICD additionally needs the Khronos `Vulkan-Headers` (fetched into the

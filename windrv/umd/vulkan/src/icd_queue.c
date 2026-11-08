@@ -13,6 +13,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include "mali_vk.h"
+#include "mali_jc.h"
 
 static void *MaliVkAlloc(uint64_t size)
 {
@@ -25,43 +26,33 @@ static void MaliVkFree(void *p) { if (p) HeapFree(GetProcessHeap(), 0, p); }
 /* ------------------------------------------------------------------ */
 
 /*
- * Job descriptor (mali_job.h): 32-byte header, payload at +32, 128-byte stride.
- * WRITE_VALUE payload: u64 address; u32 value_descriptor(=3 ZERO); u32 rsvd;
- *                      u64 immediate. Word indices here are 32-bit words.
+ * Job descriptors are encoded by the shared, host-tested builder (mali_jc), so
+ * the 128-byte alignment / job_index / next_job rules live in exactly one place.
+ * WRITE_VALUE ZERO zeroes 8 bytes, so a fill becomes size/8 linked jobs.
  */
 static VkResult MaliVkSubmitZeroJobs(MaliVkDevice *Dev, uint64_t GpuVa, uint64_t Size)
 {
-    uint32_t *w = (uint32_t *)Dev->ChainBo.CpuVa;
+    MaliJcBuilder jc;
     uint32_t jobs, k;
     UINT32 js = 0xFFFFFFFFu, irq = 0;
     MALI_UMD_SUBMIT sub;
 
-    if (!w || (Size & 7) != 0) return VK_ERROR_FORMAT_NOT_SUPPORTED;
+    if (!Dev->ChainBo.CpuVa || (Size & 7) != 0) return VK_ERROR_FORMAT_NOT_SUPPORTED;
     jobs = (uint32_t)(Size / 8);
     if (jobs == 0 || jobs > MALI_VK_MAX_ZERO_JOBS) return VK_ERROR_FORMAT_NOT_SUPPORTED;
+    if ((uint64_t)jobs * MALI_JC_STRIDE > MALI_VK_CHAIN_BO_SIZE) return VK_ERROR_FORMAT_NOT_SUPPORTED;
 
+    MaliJcInit(&jc, Dev->ChainBo.CpuVa, Dev->ChainBo.GpuVa, MALI_VK_CHAIN_BO_SIZE);
     for (k = 0; k < jobs; k++) {
-        uint32_t *d = (uint32_t *)((unsigned char *)w + (uint64_t)k * MALI_VK_CHAIN_STRIDE);
-        uint64_t nxt = (k + 1 < jobs)
-                     ? (Dev->ChainBo.GpuVa + (uint64_t)(k + 1) * MALI_VK_CHAIN_STRIDE)
-                     : 0ull;
-        uint64_t tgt = GpuVa + (uint64_t)k * 8ull;
-
-        d[0] = 0; d[1] = 0; d[2] = 0; d[3] = 0;                 /* exception/fault */
-        d[4] = (1u << 0) | ((2u & 0x7Fu) << 1) | (((k + 1u) & 0xFFFFu) << 16);
-        d[5] = 0;                                              /* dependencies   */
-        d[6] = (uint32_t)(nxt & 0xFFFFFFFFu);
-        d[7] = (uint32_t)(nxt >> 32);
-        d[8]  = (uint32_t)(tgt & 0xFFFFFFFFu);                 /* payload address */
-        d[9]  = (uint32_t)(tgt >> 32);
-        d[10] = 3;                                             /* ZERO descriptor  */
-        d[11] = 0; d[12] = 0; d[13] = 0;                       /* immediate = 0    */
+        if (MaliJcWriteValueZero(&jc, GpuVa + (uint64_t)k * 8ull) == 0u) {
+            return VK_ERROR_OUT_OF_HOST_MEMORY;
+        }
     }
 
     MaliVkZero(&sub, sizeof(sub));
     sub.Slot      = 0;
     sub.Flags     = 0;
-    sub.Jc        = Dev->ChainBo.GpuVa;
+    sub.Jc        = MaliJcHead(&jc);
     sub.Affinity  = 0;
     sub.AsNumber  = 0;
     sub.TimeoutMs = 1000;

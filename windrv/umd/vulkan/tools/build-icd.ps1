@@ -88,7 +88,8 @@ try {
         'src\icd_entry.c',
         'src\icd_device.c',
         'src\icd_queue.c',
-        (Join-Path $umd 'src\mali_umd.c')
+        (Join-Path $umd 'src\mali_umd.c'),
+        (Join-Path $umd 'src\mali_jc.c')
     )
 
     $objs = @()

@@ -92,7 +92,6 @@ typedef struct MaliVkFence_T {
 /* ------------------------------------------------------------------ */
 
 #define MALI_VK_CHAIN_BO_SIZE   (64u * 1024u)
-#define MALI_VK_CHAIN_STRIDE    128u          /* hardware: 128-byte alignment */
 #define MALI_VK_MAX_ZERO_JOBS   256u          /* cap GPU zero-fill job count  */
 
 /* Per-device execution (icd_queue.c). */
