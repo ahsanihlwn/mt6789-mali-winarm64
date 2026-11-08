@@ -116,7 +116,7 @@ Status terukur Jalur A (per `windrv/umd/README.md`):
 | `*Features2` / `*MemoryProperties2` / `*FormatProperties2` | idem | **PASS** |
 | `vkEnumeratePhysicalDevices` tanpa KMD = 0 adapter, `VK_SUCCESS` | idem | **PASS** |
 | fill nol di GPU (WRITE_VALUE chain) | `mali_vk_smoke.exe` di tablet | **PASS (V3)** |
-| image/BO round-trip, update, semaphore, event, pipeline stub | `mali_vk_smoke.exe` di tablet | **PASS (V4)** |
+| image/BO round-trip, update, semaphore, event, pipeline stub | `mali_vk_smoke.exe` di tablet | **dibangun; menunggu tablet** |
 
 Jadi Jalur A sudah **bukan** sekadar "bisa instance/device": permukaan Vulkan 1.0
 + 1.1-discovery sudah lengkap untuk object model, dan satu-satunya yang tersisa

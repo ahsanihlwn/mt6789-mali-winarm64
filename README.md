@@ -34,7 +34,9 @@ driver only ever owns the GPU core itself.
 | Interrupt delivery | ⚠️ polling fallback (no ACPI IRQ resource yet) |
 | UMD winsys `windrv/umd` (IOCTL ABI v2 wrapper) | ✅ builds ARM64, CRT-free |
 | Job-chain builder `mali_jc` + host unit test | ✅ 26/26 checks pass on x64 |
-| Vulkan ICD `windrv/umd/vulkan` | ⚠️ loader interface, instance/device, memory, buffers, fill/fence — no shaders |
+| Vulkan ICD `windrv/umd/vulkan` | ⚠️ full Vulkan 1.0 + 1.1-discovery object model and transfers; no shader execution |
+| Vulkan ICD host self-test (`tools\run-host-tests.ps1`) | ✅ 130/130 entry points resolve on x64 |
+| Vulkan ICD device-object smoke test (V4a) | ⏳ builds for ARM64; awaiting tablet to run |
 | Vulkan ICD (Mesa PanVK port, render) | ❌ not started |
 | D3D12 / DXVK / vkd3d-proton path | ❌ depends on a shader-capable ICD |
 | OpenGL (Zink) path | ❌ depends on a shader-capable ICD |
@@ -94,8 +96,9 @@ windrv/
     tools/jc_test.c      host unit test for the builder (runs on this machine)
     vulkan/              Vulkan ICD (Jalur A from GRAPHICS-STACK.md)
       src/               loader interface + core objects + queue/submit
+      test/              smoke test (ARM64/tablet) + iface test (x64/host)
       manifest/          mali_g57_icd.json (Khronos loader manifest)
-      tools/             fetch-deps.ps1, build-icd.ps1
+      tools/             fetch-deps.ps1, build-icd.ps1, build-icd-host.ps1
   mesa/                  Jalur B build environment (Meson cross-file + findings)
     cross/               aarch64-windows-msvc Meson cross file (template)
     tools/               setup.ps1, build-smoke.ps1, fetch-mesa.ps1
@@ -109,6 +112,7 @@ windrv/
       build-malitest.ps1 builds the user-mode bring-up tool
       malitest.c         bring-up / probe tool (job, MMU, power, regs)
       device/            INSTALL.CMD + TEST.CMD for the target machine
+tools/run-host-tests.ps1 all off-hardware tests (builder bytes + ICD surface)
 tools/bridge/            USB-CDC bridge used to drive the tablet remotely
 ```
 
@@ -185,6 +189,26 @@ cd windrv\umd\vulkan
 Both are ARM64 and CRT-free. To run the ICD, register the manifest from
 `build\mali_vk_icd.json` (copy it into `%ProgramData%\Vulkan\icd.d\`, or point
 `VK_DRIVER_FILES`/`VK_ICD_FILENAMES` at it).
+
+### Verify without hardware
+
+Everything that does not need the tablet is behind one script:
+
+```powershell
+.\tools\run-host-tests.ps1
+```
+
+It builds and runs, as x64 binaries on the development machine:
+
+| Test | What it proves |
+| --- | --- |
+| `mali_jc` unit test | job-descriptor byte layout: 128-byte stride, `job_index`, `next_job`, 64-bit addresses |
+| ICD entry-point self-test | all 130 application entry points resolve, loader interface v2, chained `*Properties2` queries fill correctly |
+
+Both must print `PASS`; the script exits non-zero otherwise. The ICD step is
+skipped with a pointer to `fetch-deps.ps1` when `external\Vulkan-Headers` is
+absent. This is the gate to run before pushing, and the first thing to run on a
+fresh clone to confirm the toolchain.
 
 ### Overrides
 
