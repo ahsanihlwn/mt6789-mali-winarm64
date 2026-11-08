@@ -22,7 +22,9 @@ completion/verification task, not a research project.
 There is **no Mali (Arm) WDDM/Windows driver in existence** — not from Arm, not
 from MediaTek, not from the community (the WOA/Renegade ports only have
 Snapdragon Adreno, via ported Qualcomm drivers). So there is nothing to "port
-wholesale". This is why you asked and why the answer is not a weekend.
+wholesale". That absence is precisely why this project exists: the Windows
+graphics layer is **written, not ported**. The staged plan for making Windows
+recognise Mali as a GPU is in [`WDDM-PATH.md`](WDDM-PATH.md).
 
 DirectX 12 on Windows cannot be "translated" without a driver underneath it:
 `d3d12.dll` loads a UMD from a display driver. The known-good trick is:
@@ -166,10 +168,24 @@ usable:
 - Result: D3D11 and D3D12 apps render on Mali.
 - Note: only apps using the overrides are accelerated; desktop/DWM stay on BDA.
 
-**Phase 5 — Integration (optional)**
-- Render-only WDDM driver so DWM/desktop and games use Mali directly
-  (or keep BDA scanout + offscreen Mali render with a blit path).
-- Needs Microsoft driver signing.
+**Phase 5 — WDDM render-only adapter (Windows sees a GPU)** — *planned, see
+[`WDDM-PATH.md`](WDDM-PATH.md)*
+- [ ] ACPI node for the GPU + real interrupt lines (shared work with Phase 2g).
+- [ ] Page tables / multi-AS / non-contiguous allocations (Phase 2e follow-up) —
+      VidMm will not hand out physically contiguous memory.
+- [ ] Render-only WDDM miniport (`NumOfChildren = 0`, no display outputs) so
+      DXGI enumerates Mali and Task Manager shows a GPU row. Scanout stays on
+      BDA; no display/DSI/MDP work.
+- [ ] Optional: route ICD submissions through `D3DKMT` so Task Manager engine
+      utilisation reflects real Mali work instead of reading 0 %.
+- [ ] Optional, long term: a D3D12 UMD — the only way to get native D3D on Mali.
+- Needs Microsoft driver signing to ship.
+
+**Phase 6 — Distribution**
+- Dev: test signing. Ship: attestation/WHQL (ARM64 kernel drivers must be
+  Microsoft-signed).
+- Package ICD manifest + DLL overrides so a user can install without a build
+  toolchain.
 
 **Signing (Windows 11 ARM64 full install)**
 - Dev: Secure Boot off + `bcdedit /set testsigning on`, self-signed driver.
@@ -201,3 +217,5 @@ Written by us:
 - No physical debug is cheap: keep the UART console and a WinPE boot loop.
 - Timeline is months of iteration, not weeks. Each phase delivers something
   usable on its own, so progress is never all-or-nothing.
+- The WDDM surface (Phase 5) is large but fully documented; the UMD D3D12 surface
+  is the only genuinely unbounded piece, which is why it is last and optional.

@@ -66,6 +66,7 @@ windrv/
   ARCHITECTURE.md        design of the KMD, ABI and job model
   HARDWARE-MT6789.md     register map, power/clock topology, SoC facts
   ROADMAP.md             phases and current validation status
+  WDDM-PATH.md           plan for making Windows enumerate Mali as a GPU
   REFERENCES.md          curated external references
   kmd/
     build.ps1            build + package (+ optional test signing)
