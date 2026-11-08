@@ -152,7 +152,12 @@ Realitas build (terukur — lihat [`mesa/README.md`](mesa/README.md)): Meson +
 clang-cl cross ke `aarch64-windows-msvc` **sudah jalan** di mesin dev (objek ARM64
 `0xAA64` + arsip statik terbukti, `tools\build-smoke.ps1`). Yang masih menghambat:
 **CRT MSVC ARM64 belum terpasang** (`vcruntime`/`libcmt`/`libcpmt` absen), jadi
-menautkan `.exe`/`.dll` belum bisa. Itu prasyarat setup host, bukan perubahan kode.
+menautkan `.exe`/`.dll` belum bisa. Terukur: yang kurang **bukan** libc/header/
+linker — `msvcurt.lib` + `libucrt.lib` + `BufferOverflow.lib` + `ntdll.lib`
+sudah menyelesaikan libc, dan yang tersisa persis internal `vcruntime` ARM64
+(`__GSHandlerCheck`, `__security_push/pop_cookie`, `_InterlockedAnd/Or`). Jadi
+ada dua jalan: pasang workload ARM64 (sekali, ~1 GB), atau tambahkan shim
+`vcruntime` mini di `windrv/mesa/runtime/`. Detail di `mesa/README.md`.
 
 ### 2.3 Shader — kompilasi vs cache
 
