@@ -176,6 +176,26 @@ ULONG    MaliJobSlotCount(struct _MALI_KMD_DEVICE *Ctx);
  * Requires the GPU powered; the caller does that (MaliJobSubmit powers it on
  * itself if needed) and the GPU MMU enabled.
  */
+/*
+ * Job-chain layout the ICD must produce (validated on Mali-G57 tNAx r0p1).
+ *
+ * Each descriptor starts with the 32-byte "job descriptor header":
+ *   +0  u32 exception_status          (must be 0)
+ *   +4  u32 first_incomplete_task
+ *   +8  u64 fault_pointer
+ *   +16 u32 [0]=job_descriptor_size, [7:1]=job_type, [8]=job_barrier,
+ *           [31:16]=job_index          (set size=1 for a job with a payload)
+ *   +20 u16 dependency_index_1, u16 dependency_index_2
+ *   +24 u64 next_job                   (0 terminates the chain)
+ * Payloads follow at +32 (e.g. mali_payload_write_value for job_type 2).
+ *
+ * ALIGNMENT RULE (hardware, measured on silicon):
+ *   every descriptor in a chain must be 128-byte aligned, and next_job must
+ *   therefore also be 128-byte aligned. A 64-byte stride puts the next header
+ *   inside the previous descriptor's 128-byte footprint and the JM rejects the
+ *   chain with JS_STATUS 0x58 (DATA_INVALID_FAULT). 128/256 work; 96/192/320
+ *   fail. Use a 128-byte stride.
+ */
 NTSTATUS MaliJobSubmit(struct _MALI_KMD_DEVICE *Ctx, ULONG Slot, UINT64 Jc,
                        UINT64 Affinity, ULONG AsNumber, ULONG Flags,
                        ULONG TimeoutMs, PULONG OutStatus, PULONG OutIrq);

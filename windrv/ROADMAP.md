@@ -150,7 +150,15 @@ usable:
   `--rawjob` and through `MaliJobSubmit` with `JS_CONFIG=0x3700`.
   Remaining gap: zero interrupt lines, because `ROOT\MaliMtk` has no ACPI
   resources yet, so completions are polled (2g).
-- [ ] Real job chains (produced by the ICD, Phase 3) and shared fences/timelines.
+- [x] **Real job chains** — validated on silicon: 2, 4, 8 and 15 WRITE_VALUE jobs
+  linked through `next_job` all complete with `JS_STATUS=0` and every sentinel
+  cleared. The hardware rule that cost the most time: **each descriptor in a
+  chain must be 128-byte aligned** (`next_job & 0x7F == 0`). A 64-byte stride
+  puts the next header inside the previous descriptor's footprint and the JM
+  rejects the entire chain with `0x58` (`DATA_INVALID_FAULT`) before running any
+  job (`HEAD == TAIL`). Strides 128/256 work, 64/96/192/320 fail. `JS_CONFIG`
+  flush bits are irrelevant to this. Encoded in `include/mali_job.h` for the ICD.
+- [ ] Shared fences / timeline semaphores for the ICD (Phase 3).
 - [ ] System SMMU/IOMMU (bypassed for bring-up — GPU-side MMU is used instead).
 - Result: power on GPU, allocate GPU memory, map it, run a null job, see IRQs.
 

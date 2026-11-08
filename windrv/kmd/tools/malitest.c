@@ -605,22 +605,27 @@ static int Run(void)
                  * Knobs for bisecting the chain encoding:
                  *   --chainidx  B   first job_index (default 1)
                  *   --chain2type T  job type of every job after the first (2)
-                 *   --chaingap  N   descriptor stride in bytes (default 64)
+                 *   --chaingap  N   descriptor stride in bytes (default 128)
                  *   --chaindump     print each descriptor from the CPU view
+                 *
+                 * Hardware rule found on silicon (Mali-G57 tNAx r0p1): every
+                 * descriptor in a chain must be 128-byte aligned. 128/256 work,
+                 * 64/96/192/320 fail with JS_STATUS 0x58 (DATA_INVALID_FAULT).
+                 * A 64-byte descriptor "size" is therefore not the chain stride.
                  */
                 const char *chp = Find(cmd, "--chain");
                 const char *c2p = Find(cmd, "--chain2type");
                 const char *cip = Find(cmd, "--chainidx");
                 const char *cgp = Find(cmd, "--chaingap");
-                unsigned n = 4, k, t2 = 2, idxBase = 1, stride = 64;
+                unsigned n = 4, k, t2 = 2, idxBase = 1, stride = 128;
                 if (chp) ParseU(chp, &n);
                 if (c2p) ParseU(c2p, &t2);
                 if (cip) ParseU(cip, &idxBase);
                 if (cgp) ParseU(cgp, &stride);
                 if (n < 1) n = 1;
                 if (n > 32) n = 32;
-                if (stride < 64) stride = 64;
-                if (stride & 3) stride = 64;
+                if (stride < 128) stride = 128;
+                stride = (stride + 127u) & ~127u;   /* next_job must be 128-aligned */
                 if ((unsigned long long)n * stride > 0x7C0) n = 0x7C0 / stride;
                 for (i = 0; i < 1024; i++) w[i] = 0;
                 for (k = 0; k < n; k++) {
@@ -733,10 +738,14 @@ static int Run(void)
             Out("\r\n");
             if (Has(cmd, "--chain")) {
                 const char *chp = Find(cmd, "--chain");
-                unsigned n = 4, k, ok = 0;
+                const char *cgp2 = Find(cmd, "--chaingap");
+                unsigned n = 4, k, ok = 0, stride2 = 128;
                 if (chp) ParseU(chp, &n);
+                if (cgp2) ParseU(cgp2, &stride2);
                 if (n < 1) n = 1;
                 if (n > 32) n = 32;
+                if (stride2 < 128) stride2 = 128;
+                stride2 = (stride2 + 127u) & ~127u;
                 Out("  chain sentinels:");
                 for (k = 0; k < n; k++) {
                     unsigned v = *(volatile unsigned *)((volatile unsigned char *)w + 0x800 + k * 8);
@@ -746,7 +755,7 @@ static int Run(void)
                 Out("\r\n  chain cleared "); OutDec(ok); Out("/"); OutDec(n); Out("\r\n");
                 if (Has(cmd, "--chaindump")) {
                     for (k = 0; k < n; k++) {
-                        volatile unsigned *d = w + (k * 16);
+                        volatile unsigned *d = w + (k * (stride2 / 4));
                         Out("  desc["); OutDec(k); Out("] w4 "); OutHex(d[4]);
                         Out(" w6 "); OutHex(d[6]);
                         Out(" w7 "); OutHex(d[7]);

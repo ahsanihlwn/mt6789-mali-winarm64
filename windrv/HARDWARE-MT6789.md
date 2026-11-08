@@ -41,6 +41,21 @@ Slower clocks in `gpufreq` map (MFG is clocked off `MFGPLL`; the SPM/`scpsys`
 block gates `MFG0-3`). SMMU/IOMMU for GPU virtual memory lives in the
 MediaTek SMMU (separate from the GPU register block).
 
+### Job Manager chain rules (measured on silicon, tNAx r0p1)
+
+| Rule | Evidence |
+|------|----------|
+| Job descriptor header = 32 bytes; payload follows at +32 | `WRITE_VALUE` payload at +32 honoured |
+| `job_descriptor_size` bit 0 = 1 for a job that carries a payload | write-value job writes memory |
+| Chain terminates with `next_job == 0` | 1-job chain completes |
+| **Every descriptor in a chain must be 128-byte aligned** | stride 128/256 complete; 64/96/192/320 give `JS_STATUS 0x58` (`DATA_INVALID_FAULT`) |
+| `job_index` is 1-based per chain | `pan_jc_add_job` uses `++jc->job_index` |
+| `JS_CONFIG` flush bits do not affect chaining | 0x8000 / 0x8300 / 0x8800 / 0x8301 all behave the same |
+
+The 128-byte alignment rule is the non-obvious one: a 64-byte stride places the
+next header inside the previous descriptor's footprint and the JM rejects the
+whole chain before running any job (`HEAD == TAIL`).
+
 ## Display
 
 - MediaTek MDP / OVL / DSI with `clk-mt6789-mmsys`, `clk-mt6789-disp_dsc`.

@@ -28,7 +28,7 @@ driver only ever owns the GPU core itself.
 | Buffer object allocation + CPU readback | ✅ |
 | NULL job submission, completion | ✅ |
 | WRITE_VALUE job (GPU writes to memory) | ✅ |
-| Job chains (multiple linked jobs) | ❌ `DATA_INVALID_FAULT` |
+| Job chains (multiple linked jobs) | ✅ 128-byte descriptor alignment |
 | Interrupt delivery | ⚠️ polling fallback (no ACPI IRQ resource yet) |
 | Vulkan ICD (Mesa PanVK port) | ❌ not started |
 | D3D12 / DXVK / vkd3d-proton path | ❌ depends on the ICD |
@@ -176,6 +176,11 @@ The interesting parts are all in [`windrv/ROADMAP.md`](windrv/ROADMAP.md) and
 4. **No IRQ resource.** The `ROOT\MaliMtk` node has no interrupt descriptors, so
    completion currently falls back to polling `JOB_IRQ_RAWSTAT`. An ACPI node
    with a `GpioInt`/`Interrupt` resource is needed for real IRQs.
+5. **Job chains need 128-byte alignment.** Linking jobs with a 64-byte stride
+   makes the JM reject the whole chain with `JS_STATUS 0x58`
+   (`DATA_INVALID_FAULT`) before running anything (`HEAD == TAIL`). Every
+   descriptor must be 128-byte aligned; 128/256-byte strides complete, 64/96/192/
+   320 do not. `JS_CONFIG` flush bits make no difference.
 
 ## Reference material
 
