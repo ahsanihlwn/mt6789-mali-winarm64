@@ -1,0 +1,65 @@
+; MaliKmd.inf  -  MediaTek Mali GPU accelerator KMD (KMDF) for Windows ARM64
+;
+; Phase 2 bring-up driver. The GPU is not ACPI-described yet, so this INF
+; exposes both the future ACPI hardware IDs and a ROOT-enumerated ID that can
+; be installed manually for bring-up.
+;
+; This is an accelerator / hardware-broker driver only. It is NOT a display
+; or WDDM driver; scanout stays on the Microsoft Basic Display Adapter.
+
+[Version]
+Signature       = "$Windows NT$"
+Class           = System
+ClassGuid       = {4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider        = %ProviderName%
+DriverVer       = 11/08/2026,0.2.2.0
+CatalogFile     = MaliKmd.cat
+; PnpLockdown intentionally omitted: this is an experimental bring-up driver
+; that is rebuilt and re-staged frequently; lockdown would ACL the installed
+; .sys to TrustedInstaller and block in-place updates from the admin agent.
+
+[DestinationDirs]
+Files_Dir = 12
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+MaliKmd.sys = 1,,
+
+[Manufacturer]
+%ManufacturerName% = MaliKmd, NTARM64
+
+[MaliKmd.NTARM64]
+%MaliKmd.DeviceDesc% = MaliKmd_Install, ACPI\MTKMALI
+%MaliKmd.DeviceDesc% = MaliKmd_Install, ACPI\MTK06789
+%MaliKmd.DeviceDesc% = MaliKmd_Install, ROOT\MaliMtk
+
+[MaliKmd_Install.NT]
+CopyFiles = Files_Dir
+
+[Files_Dir]
+MaliKmd.sys,,,0x00004000    ; copy if not present
+
+[MaliKmd_Install.NT.Services]
+AddService = MaliKmd, 2, MaliKmd_Service_Inst
+
+[MaliKmd_Service_Inst]
+DisplayName    = %ServiceDesc%
+ServiceType    = 1
+StartType      = 3
+ErrorControl   = 1
+ServiceBinary  = %12%\MaliKmd.sys
+
+[MaliKmd_Install.NT.Wdf]
+KmdfService    = MaliKmd, MaliKmd_Wdf_Section
+
+[MaliKmd_Wdf_Section]
+KmdfLibraryVersion = 1.33
+
+[Strings]
+ProviderName     = "MTK Mali Windows Project"
+ManufacturerName = "MTK Mali Windows Project"
+MaliKmd.DeviceDesc = "MediaTek Mali GPU accelerator (MT6789)"
+ServiceDesc      = "MediaTek Mali GPU KMD"
+DiskName         = "Mali KMD"

@@ -1,0 +1,203 @@
+# MT6789 on Windows 11 ARM64 — driver plan & DX12 path
+
+> Ringkasan arsitektur: `ARCHITECTURE.md`. Detail hardware: `HARDWARE-MT6789.md`.
+> **Target: Windows 11 ARM64 full install** (bukan WinPE) untuk fase render/D3D.
+
+> Honest scope first. Read this part before the phases.
+
+## 1. Can it be done? Realistic answer
+
+**CPU / timer / interrupt — yes, and mostly done.**
+Windows on ARM has a generic ARM64 HAL. Nothing custom is needed for the CPU.
+What is needed is correct **ACPI** (`MADT`/`GTDT`/`FADT`/`PPTT`, `DSDT`) + PSCI.
+The `edk2-UEFI-mtk` tree is already drafting those tables. This is a
+completion/verification task, not a research project.
+
+**Display — yes, with two tiers.**
+1. Tier A (fast): ship the UEFI GOP framebuffer and let the **Microsoft Basic
+   Display Adapter** drive scanout at native res. Gets a real desktop today.
+2. Tier B (proper): a WDDM *display-only* miniport for MTK MDP/OVL/DSI.
+
+**GPU 3D + DirectX 12 — possible, but this is research-grade and long.**
+There is **no Mali (Arm) WDDM/Windows driver in existence** — not from Arm, not
+from MediaTek, not from the community (the WOA/Renegade ports only have
+Snapdragon Adreno, via ported Qualcomm drivers). So there is nothing to "port
+wholesale". This is why you asked and why the answer is not a weekend.
+
+DirectX 12 on Windows cannot be "translated" without a driver underneath it:
+`d3d12.dll` loads a UMD from a display driver. The known-good trick is:
+
+```
+D3D12 app ──► vkd3d-proton (drop-in d3d12.dll + d3d12core.dll)  ─┐
+D3D11/10/9 app ──► DXVK (d3d11.dll / dxgi.dll)                   ├─► Vulkan ICD
+                                                                 ┘
+                          Vulkan ICD for Mali-G57  ──►  Mali hardware
+```
+
+- `vkd3d-proton` and `DXVK` are **native Win32 DLLs** and already run on Windows
+  (they are the same libs Proton uses). **We do not have to write the D3D side.**
+- The missing link is a **Vulkan ICD that talks to Mali-G57 from Windows.**
+  Mesa's `PanVK` already speaks Valhall (G57), but it expects the Linux
+  `panfrost`/`panthor` kernel/DRM interface (`/dev/dri`, ioctls, GEM/dma-buf).
+  Windows has no such thing, so we supply it.
+
+So the whole game reduces to **two components we own**:
+
+1. a small **kernel-mode driver (KMD)** that owns the Mali hardware
+   (registers, clocks, power, IRQs, SMMU, memory), and
+2. a **user-mode Vulkan ICD** that talks to that KMD (a Windows-shaped
+   `panfrost`/`kbase` shim under Mesa's PanVK).
+
+Everything above that (D3D12/D3D11/D3D9) is free, reused from upstream.
+
+**Stopgap (ship today, no hardware acceleration):** WARP (software D3D12) is
+built into Windows. With a working display driver, D3D12 apps run *correctly*
+(just slow). That gives "DX12 jalan" now while the hardware path is built.
+
+## 2. Target definition
+
+The target is a **render + display stack**, split so that partial wins are
+usable:
+
+| Layer | Component | Owner |
+|-------|-----------|-------|
+| CPU/timer/IRQ | ACPI tables + PSCI | finish in `edk2-UEFI-mtk` |
+| Display | Basic Display Adapter → later WDDM display miniport (MDP/OVL/DSI) | us |
+| GPU memory/regs | **Mali KMD (KMDF, ARM64)** | us |
+| Vulkan | **Mesa PanVK ICD on Windows** — talks to KMD | us (port) |
+| D3D12 | vkd3d-proton | reuse |
+| D3D9/10/11 | DXVK | reuse |
+
+## 3. Phases
+
+**Phase 0 — Foundation (this folder)** — *mostly done*
+- [x] Hardware inventory (`HARDWARE-MT6789.md`).
+- [x] ARM64 driver build with **clang + the extracted (read-only) WDK** and the
+  MSVC x64 linker — no WDK/MSVC install needed. `build.ps1` emits a signed
+  `build\package\{MaliKmd.sys,MaliKmd.cat,MaliKmd.inf}` and runs `Inf2Cat`.
+- [ ] Confirm board/slot + keep a WinPE boot loop for bring-up.
+
+**Phase 1 — Display + ACPI (usable desktop)** — *done*
+- [x] Windows 11 ARM64 boots; desktop up; 8 CPUs; timer ticking.
+- [x] Display via Basic Display Adapter at native res (no display driver written).
+- [x] ACPI (`MADT`/`GTDT`/`FADT`/`DSDT`) sufficient for boot in `edk2-UEFI-mtk`.
+- [ ] Publish the Mali node in ACPI so PnP binds it without the ROOT hack (2g).
+
+**Phase 1.5 — Stopgap DX12** — *optional, available now*
+- Enable WARP; validate a D3D12 sample runs on the device.
+- Result: "DX12 berjalan" (software), correctness first. Not Mali acceleration.
+
+**Phase 2 — Mali KMD (accelerator / hardware broker, KMDF)** — *validated on silicon*
+- [x] Map `0x13000000` (GPU), `0x13FBF000` (MFG_TOP), `0x1000C000` (APMIXED),
+  `0x10006000` (SPM/scpsys). Identification (`GPU_ID`, `CORE_FEATURES`,
+  `MMU_FEATURES`, `SHADER_PRESENT`) is read **only when the MFG domains already
+  report powered**, so a cold boot cannot touch a dead block.
+- [x] Data-driven SPM MTCMOS power for `MFG0..3`, matching `mtk-scpsys.c`:
+  `PWR_ON`/`PWR_ON_2ND` (bits 2/3), both `PWR_STATUS` (0x16C) and
+  `PWR_STATUS_2ND` (0x170) must agree, then `PWR_CLK_DIS`/`PWR_ISO` release,
+  `PWR_RST_B`, and SRAM un-gate with ACK. Driven by IOCTL; load is read-only.
+- [ ] **Phase 2h — MFG clock tree**: TOPCKGEN `CLK_CFG_4` mux (`mfg_pll_sel`,
+  bit 18), APMIXED `MFGPLL_CON0..3` enable, and the MFG_TOP clock gates. Until
+  this lands, a successful MTCMOS power-on may still leave the GPU clock gated
+  and `GPU_ID` reading 0. Deliberately not poked yet.
+- [x] GPU buffer objects: physically-contiguous alloc, MDL user mapping, handle
+  table, free-with-unmap.
+- [x] Mali **MMU** (AArch64 4K, 4-level page tables, identity VA==PA), enable on
+  AS0 with `AS_COMMAND_UPDATE` (verified against `kbase_mmu_hw_configure`), PTE
+  type/attr/AF/RW bits verified against `mali_kbase_mmu_mode_aarch64.c`, fault
+  status readback. Page-table creation is race-safe.
+  **Address mode: `ADRMODE_IDENTITY` by default** (`MALI_MMU_USE_PAGE_TABLES` in
+  `include/mali_mmu.h` flips back). Rationale: BOs are identity mapped, so the
+  table buys nothing today, and on silicon the AArch64 table path raises
+  `AS_FAULTSTATUS=0x7C0002C0` (translation fault, read) on the first descriptor
+  fetch even though `TRANSTAB`, `MEMATTR` and `TRANSCFG` read back correctly;
+  `IDENTITY` completes the same job in 0 ms. Two suspects to chase before
+  enabling tables: (a) page-table pages are allocated >4 GB and the walker may
+  not reach them, (b) table VAs come from `MmGetVirtualForPhysical()` (cached
+  direct map) while the pages are `MmNonCached`, which is architecturally
+  unpredictable on ARM64. Per-page cache attributes will be needed for peak
+  throughput, so this must be fixed before performance work.
+- [x] **Core power**: shader/tiler/L2 `PRESENT -> PWRON -> poll READY`, after
+  MTCMOS; `SHADER_PRESENT` offset corrected (`0x100`, was wrongly `0x2C0`).
+- [x] **GPU soft reset on power-up**, matching `kbase_pm_do_reset`: after MTCMOS
+  is on, write `GPU_COMMAND=SOFT_RESET` and poll `GPU_IRQ_RAWSTAT.RESET_COMPLETED`,
+  *then* power the core stacks. Two bring-up failures came from the missing
+  ordering: without any reset the JM accepted a job but never ran it
+  (`JS_STATUS` stuck at `0x08` = ACTIVE, no IRQ); with the reset but cores
+  powered *before* it, the first submit failed `JS_STATUS=0x41` (POWER_FAULT)
+  because the reset clears `PWRON`.
+- [x] Register the GPU/MMU/JOB interrupt lines (level-triggered, mask-in-ISR /
+  clear-and-restore-in-DPC, GPU+MMU fault capture, counters). EVENT/PWR are
+  intentionally left to the power work. **Zero lines is tolerated**: the ROOT
+  device has no interrupt resources until ACPI publishes the node, in which case
+  completions fall back to polling `JOB_IRQ_RAWSTAT`.
+- [x] Job submission: userspace supplies the chain head GPU VA, the KMD programs
+  `JS_HEAD_NEXT` / `JS_AFFINITY_NEXT` / `JS_CONFIG_NEXT` / `JS_COMMAND_NEXT` and
+  offers a synchronous completion fence (IRQ generation or RAWSTAT poll).
+  `JS_CONFIG` bits verified against `mali_kbase_gpu_regmap_jm.h`:
+  start-flush bits 8-9, `START_MMU` bit 10, end-flush bits 12-13, pri `<<16`.
+  `IOCTL_MALI_JOB_SELFTEST` exercises the path with an empty chain.
+- [x] IOCTL ABI for the ICD: open, caps, power, BO alloc/map/free/info, MMU
+  control + fault, job submit/status/stop/selftest, IRQ stats (ABI v2).
+- [x] CRT-free ARM64 `malitest.exe` + `INSTALL.CMD` / `TEST.CMD`, uploaded over
+  the USB CDC bridge with SHA-256 verification.
+- [x] **Hardware validation** of every path: power on/off (`PWR_STATUS` both
+  copies), `GPU_ID=0x90930010` (tNAx r0p1, Mali-G57 MC2), MMU enable, BO
+  alloc/CPU readback/free, and a **null job completing**
+  (`JS_STATUS=0x0`, `JOB_IRQ_RAWSTAT` slot0 done, `CMD_NEXT=0`) both from
+  `--rawjob` and through `MaliJobSubmit` with `JS_CONFIG=0x3700`.
+  Remaining gap: zero interrupt lines, because `ROOT\MaliMtk` has no ACPI
+  resources yet, so completions are polled (2g).
+- [ ] Real job chains (produced by the ICD, Phase 3) and shared fences/timelines.
+- [ ] System SMMU/IOMMU (bypassed for bring-up — GPU-side MMU is used instead).
+- Result: power on GPU, allocate GPU memory, map it, run a null job, see IRQs.
+
+**Phase 3 — Vulkan ICD** *(critical path)*
+- Port Mesa `PanVK` (Valhall) to Windows: replace the DRM ioctl backend with our
+  IOCTL backend; build for ARM64.
+- Implement/adjust Win32 WSI (`VK_KHR_win32_surface`) so swapchain present works.
+- Result: a clear triangle / Vulkan CTS smoke test on Mali.
+- This, not the KMD, is what makes the GPU visible to applications. It can start
+  in parallel once 2e/2f have skeletons.
+
+**Phase 4 — D3D translation**
+- Drop in vkd3d-proton (`d3d12.dll`, `d3d12core.dll`) and DXVK (`d3d11.dll`,
+  `dxgi.dll`) as per-application DLL overrides on top of the ICD.
+- Result: D3D11 and D3D12 apps render on Mali.
+- Note: only apps using the overrides are accelerated; desktop/DWM stay on BDA.
+
+**Phase 5 — Integration (optional)**
+- Render-only WDDM driver so DWM/desktop and games use Mali directly
+  (or keep BDA scanout + offscreen Mali render with a blit path).
+- Needs Microsoft driver signing.
+
+**Signing (Windows 11 ARM64 full install)**
+- Dev: Secure Boot off + `bcdedit /set testsigning on`, self-signed driver.
+- Ship: attestation/WHQL (ARM64 kernel drivers must be Microsoft-signed).
+
+## 4. What is reused vs written
+
+External references (links, papers, notes) are collected in
+[`../REFERENCES.md`](../REFERENCES.md).
+
+Reused (external, for reference/reuse as allowed):
+- `vkd3d-proton` (D3D12→Vulkan), `DXVK` (D3D9/10/11→Vulkan).
+- Mesa `PanVK`/`panfrost` (Valhall userspace + register knowledge).
+- Arm `kbase` r32p1 and MTK `ged`/`gpufreq` (this repo) as the register/clock/
+  power reference for the KMD.
+
+Written by us:
+- Mali **KMD** for Windows (new).
+- **Windows backend** for PanVK (new — the port).
+- WDDM display miniport (new, later).
+
+## 5. Risks / cost
+
+- Porting PanVK off DRM is the single biggest unknown; the KMD ABI must match
+  what PanVK expects, or Mesa is patched to a new internal interface.
+- Mesa's ARM64-Windows build support is incomplete → expect build-system work.
+- Win32 WSI (swapchain present) is a separate integration point from rendering.
+- ARM64 driver signing: test-sign for dev, attestation/WHQL to ship.
+- No physical debug is cheap: keep the UART console and a WinPE boot loop.
+- Timeline is months of iteration, not weeks. Each phase delivers something
+  usable on its own, so progress is never all-or-nothing.
