@@ -78,6 +78,481 @@ typedef struct Api {
     do { (api)->field = (PFN_##name)vkGetInstanceProcAddr((inst), #name); \
          if (!(api)->field) { Fail("missing entry point " #name); return 1; } } while (0)
 
+/* ------------------------------------------------------------------ */
+/* Device-object coverage: images, semaphores, events, shader modules, */
+/* pipelines and the transfer commands that move data between them.    */
+/* None of this needs a shader compiler; it proves the object model    */
+/* and the transfer paths that vkd3d-proton/DXVK will lean on first.   */
+/* ------------------------------------------------------------------ */
+
+static int MakeBuffer(VkInstance instance, VkDevice device, uint32_t memType, uint64_t size,
+                      VkBuffer *outBuf, VkDeviceMemory *outMem, void **outMap)
+{
+    PFN_vkCreateBuffer CreateBuffer;
+    PFN_vkGetBufferMemoryRequirements GetReq;
+    PFN_vkAllocateMemory AllocateMemory;
+    PFN_vkBindBufferMemory BindBufferMemory;
+    PFN_vkMapMemory MapMemory;
+    VkBufferCreateInfo bci;
+    VkMemoryRequirements req;
+    VkMemoryAllocateInfo mai;
+    VkResult r;
+    size_t i;
+
+    CreateBuffer       = (PFN_vkCreateBuffer)vkGetInstanceProcAddr(instance, "vkCreateBuffer");
+    GetReq             = (PFN_vkGetBufferMemoryRequirements)vkGetInstanceProcAddr(instance, "vkGetBufferMemoryRequirements");
+    AllocateMemory     = (PFN_vkAllocateMemory)vkGetInstanceProcAddr(instance, "vkAllocateMemory");
+    BindBufferMemory   = (PFN_vkBindBufferMemory)vkGetInstanceProcAddr(instance, "vkBindBufferMemory");
+    MapMemory          = (PFN_vkMapMemory)vkGetInstanceProcAddr(instance, "vkMapMemory");
+    if (!CreateBuffer || !GetReq || !AllocateMemory || !BindBufferMemory || !MapMemory) return 1;
+
+    for (i = 0; i < sizeof(bci); i++) ((unsigned char *)&bci)[i] = 0;
+    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bci.size  = size;
+    bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    r = CreateBuffer(device, &bci, NULL, outBuf);
+    if (r != VK_SUCCESS) { Fail("vkCreateBuffer (object test)"); return 1; }
+
+    for (i = 0; i < sizeof(req); i++) ((unsigned char *)&req)[i] = 0;
+    GetReq(device, *outBuf, &req);
+
+    for (i = 0; i < sizeof(mai); i++) ((unsigned char *)&mai)[i] = 0;
+    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    mai.allocationSize = req.size < size ? size : req.size;
+    mai.memoryTypeIndex = memType;
+    r = AllocateMemory(device, &mai, NULL, outMem);
+    if (r != VK_SUCCESS) { Fail("vkAllocateMemory (object test)"); return 1; }
+
+    r = BindBufferMemory(device, *outBuf, *outMem, 0);
+    if (r != VK_SUCCESS) { Fail("vkBindBufferMemory (object test)"); return 1; }
+
+    return MapMemory(device, *outMem, 0, VK_WHOLE_SIZE, 0, outMap) == VK_SUCCESS ? 0 : 1;
+}
+
+static int RunDeviceObjects(VkInstance instance, VkDevice device, VkQueue queue, uint32_t memType)
+{
+    PFN_vkCreateImage CreateImage;
+    PFN_vkDestroyImage DestroyImage;
+    PFN_vkGetImageMemoryRequirements GetImageReq;
+    PFN_vkBindImageMemory BindImageMemory;
+    PFN_vkCreateImageView CreateImageView;
+    PFN_vkDestroyImageView DestroyImageView;
+    PFN_vkAllocateMemory AllocateMemory;
+    PFN_vkFreeMemory FreeMemory;
+    PFN_vkDestroyBuffer DestroyBuffer;
+    PFN_vkUnmapMemory UnmapMemory;
+    PFN_vkCreateCommandPool CreateCommandPool;
+    PFN_vkDestroyCommandPool DestroyCommandPool;
+    PFN_vkAllocateCommandBuffers AllocateCommandBuffers;
+    PFN_vkBeginCommandBuffer BeginCommandBuffer;
+    PFN_vkEndCommandBuffer EndCommandBuffer;
+    PFN_vkCmdUpdateBuffer CmdUpdateBuffer;
+    PFN_vkCmdCopyBufferToImage CmdCopyBufferToImage;
+    PFN_vkCmdCopyImageToBuffer CmdCopyImageToBuffer;
+    PFN_vkCreateFence CreateFence;
+    PFN_vkDestroyFence DestroyFence;
+    PFN_vkQueueSubmit QueueSubmit;
+    PFN_vkCreateSemaphore CreateSemaphore;
+    PFN_vkDestroySemaphore DestroySemaphore;
+    PFN_vkCreateEvent CreateEvent;
+    PFN_vkDestroyEvent DestroyEvent;
+    PFN_vkGetEventStatus GetEventStatus;
+    PFN_vkSetEvent SetEvent;
+    PFN_vkResetEvent ResetEvent;
+    PFN_vkCreateShaderModule CreateShaderModule;
+    PFN_vkDestroyShaderModule DestroyShaderModule;
+    PFN_vkCreateDescriptorSetLayout CreateDescriptorSetLayout;
+    PFN_vkDestroyDescriptorSetLayout DestroyDescriptorSetLayout;
+    PFN_vkCreatePipelineLayout CreatePipelineLayout;
+    PFN_vkDestroyPipelineLayout DestroyPipelineLayout;
+    PFN_vkCreateDescriptorPool CreateDescriptorPool;
+    PFN_vkDestroyDescriptorPool DestroyDescriptorPool;
+    PFN_vkAllocateDescriptorSets AllocateDescriptorSets;
+    PFN_vkFreeDescriptorSets FreeDescriptorSets;
+    PFN_vkCreateComputePipelines CreateComputePipelines;
+    PFN_vkDestroyPipeline DestroyPipeline;
+    PFN_vkCreateSampler CreateSampler;
+    PFN_vkDestroySampler DestroySampler;
+    PFN_vkCreateRenderPass CreateRenderPass;
+    PFN_vkDestroyRenderPass DestroyRenderPass;
+    PFN_vkCreateFramebuffer CreateFramebuffer;
+    PFN_vkDestroyFramebuffer DestroyFramebuffer;
+
+    VkImage image = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    VkDeviceMemory imageMem = VK_NULL_HANDLE;
+    VkBuffer srcBuf = VK_NULL_HANDLE, dstBuf = VK_NULL_HANDLE;
+    VkDeviceMemory srcMem = VK_NULL_HANDLE, dstMem = VK_NULL_HANDLE;
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    VkSemaphore sem = VK_NULL_HANDLE;
+    VkEvent ev = VK_NULL_HANDLE;
+    VkShaderModule module = VK_NULL_HANDLE;
+    VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
+    VkPipelineLayout pl = VK_NULL_HANDLE;
+    VkDescriptorPool dpool = VK_NULL_HANDLE;
+    VkDescriptorSet dset = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkSampler sampler = VK_NULL_HANDLE;
+    VkRenderPass pass = VK_NULL_HANDLE;
+    VkFramebuffer fb = VK_NULL_HANDLE;
+    VkImageCreateInfo ici;
+    VkMemoryRequirements ireq;
+    VkMemoryAllocateInfo mai;
+    VkImageViewCreateInfo vci;
+    VkCommandPoolCreateInfo pci;
+    VkCommandBufferAllocateInfo cbai;
+    VkCommandBufferBeginInfo cbbi;
+    VkSubmitInfo si;
+    VkFenceCreateInfo fci;
+    VkSemaphoreCreateInfo sci;
+    VkEventCreateInfo eci;
+    VkShaderModuleCreateInfo smci;
+    VkDescriptorSetLayoutCreateInfo dslci;
+    VkPipelineLayoutCreateInfo plci;
+    VkDescriptorPoolSize dps;
+    VkDescriptorPoolCreateInfo dpci;
+    VkDescriptorSetAllocateInfo dsai;
+    VkComputePipelineCreateInfo cpci;
+    VkPipelineShaderStageCreateInfo stage;
+    VkSamplerCreateInfo samci;
+    VkAttachmentDescription att;
+    VkAttachmentReference ref;
+    VkSubpassDescription sub;
+    VkRenderPassCreateInfo rpci;
+    VkFramebufferCreateInfo fbci;
+    VkBufferImageCopy region;
+    void *srcMap = NULL, *dstMap = NULL;
+    uint32_t pattern[4], i;
+    size_t z;
+    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkResult r;
+    int ok = 0;
+
+#define LOAD(field, name) \
+    do { field = (PFN_##name)vkGetInstanceProcAddr(instance, #name); \
+         if (!field) { Fail("missing entry point " #name); return 1; } } while (0)
+
+    LOAD(CreateImage, vkCreateImage);
+    LOAD(DestroyImage, vkDestroyImage);
+    LOAD(GetImageReq, vkGetImageMemoryRequirements);
+    LOAD(BindImageMemory, vkBindImageMemory);
+    LOAD(CreateImageView, vkCreateImageView);
+    LOAD(DestroyImageView, vkDestroyImageView);
+    LOAD(AllocateMemory, vkAllocateMemory);
+    LOAD(FreeMemory, vkFreeMemory);
+    LOAD(DestroyBuffer, vkDestroyBuffer);
+    LOAD(UnmapMemory, vkUnmapMemory);
+    LOAD(CreateCommandPool, vkCreateCommandPool);
+    LOAD(DestroyCommandPool, vkDestroyCommandPool);
+    LOAD(AllocateCommandBuffers, vkAllocateCommandBuffers);
+    LOAD(BeginCommandBuffer, vkBeginCommandBuffer);
+    LOAD(EndCommandBuffer, vkEndCommandBuffer);
+    LOAD(CmdUpdateBuffer, vkCmdUpdateBuffer);
+    LOAD(CmdCopyBufferToImage, vkCmdCopyBufferToImage);
+    LOAD(CmdCopyImageToBuffer, vkCmdCopyImageToBuffer);
+    LOAD(CreateFence, vkCreateFence);
+    LOAD(DestroyFence, vkDestroyFence);
+    LOAD(QueueSubmit, vkQueueSubmit);
+    LOAD(CreateSemaphore, vkCreateSemaphore);
+    LOAD(DestroySemaphore, vkDestroySemaphore);
+    LOAD(CreateEvent, vkCreateEvent);
+    LOAD(DestroyEvent, vkDestroyEvent);
+    LOAD(GetEventStatus, vkGetEventStatus);
+    LOAD(SetEvent, vkSetEvent);
+    LOAD(ResetEvent, vkResetEvent);
+    LOAD(CreateShaderModule, vkCreateShaderModule);
+    LOAD(DestroyShaderModule, vkDestroyShaderModule);
+    LOAD(CreateDescriptorSetLayout, vkCreateDescriptorSetLayout);
+    LOAD(DestroyDescriptorSetLayout, vkDestroyDescriptorSetLayout);
+    LOAD(CreatePipelineLayout, vkCreatePipelineLayout);
+    LOAD(DestroyPipelineLayout, vkDestroyPipelineLayout);
+    LOAD(CreateDescriptorPool, vkCreateDescriptorPool);
+    LOAD(DestroyDescriptorPool, vkDestroyDescriptorPool);
+    LOAD(AllocateDescriptorSets, vkAllocateDescriptorSets);
+    LOAD(FreeDescriptorSets, vkFreeDescriptorSets);
+    LOAD(CreateComputePipelines, vkCreateComputePipelines);
+    LOAD(DestroyPipeline, vkDestroyPipeline);
+    LOAD(CreateSampler, vkCreateSampler);
+    LOAD(DestroySampler, vkDestroySampler);
+    LOAD(CreateRenderPass, vkCreateRenderPass);
+    LOAD(DestroyRenderPass, vkDestroyRenderPass);
+    LOAD(CreateFramebuffer, vkCreateFramebuffer);
+    LOAD(DestroyFramebuffer, vkDestroyFramebuffer);
+
+#undef LOAD
+
+    for (z = 0; z < sizeof(pci); z++) ((unsigned char *)&pci)[z] = 0;
+    pci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pci.queueFamilyIndex = 0;
+    if (CreateCommandPool(device, &pci, NULL, &pool) != VK_SUCCESS) { Fail("vkCreateCommandPool"); return 1; }
+
+    for (z = 0; z < sizeof(cbai); z++) ((unsigned char *)&cbai)[z] = 0;
+    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cbai.commandPool = pool;
+    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbai.commandBufferCount = 1;
+    if (AllocateCommandBuffers(device, &cbai, &cb) != VK_SUCCESS) { Fail("vkAllocateCommandBuffers"); goto objdone; }
+
+    for (z = 0; z < sizeof(fci); z++) ((unsigned char *)&fci)[z] = 0;
+    fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    if (CreateFence(device, &fci, NULL, &fence) != VK_SUCCESS) { Fail("vkCreateFence"); goto objdone; }
+
+    for (z = 0; z < sizeof(si); z++) ((unsigned char *)&si)[z] = 0;
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cb;
+
+    for (z = 0; z < sizeof(cbbi); z++) ((unsigned char *)&cbbi)[z] = 0;
+    cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+    /* ---- vkCmdUpdateBuffer: inline payload copied to the BO ---- */
+    if (MakeBuffer(instance, device, memType, 16384, &srcBuf, &srcMem, &srcMap) != 0) goto objdone;
+    if (MakeBuffer(instance, device, memType, 16384, &dstBuf, &dstMem, &dstMap) != 0) goto objdone;
+
+    pattern[0] = 0x11223344u; pattern[1] = 0x55667788u;
+    pattern[2] = 0x99AABBCCu; pattern[3] = 0xDDEEFF00u;
+    for (i = 0; i < 16384 / 4; i++) ((uint32_t *)srcMap)[i] = 0;
+    for (i = 0; i < 16384 / 4; i++) ((uint32_t *)dstMap)[i] = 0xCCCCCCCCu;
+
+    BeginCommandBuffer(cb, &cbbi);
+    CmdUpdateBuffer(cb, srcBuf, 0, 16, pattern);
+    EndCommandBuffer(cb);
+    if (QueueSubmit(queue, 1, &si, fence) != VK_SUCCESS) { Fail("vkQueueSubmit (update)"); goto objdone; }
+    for (i = 0; i < 4; i++) {
+        if (((uint32_t *)srcMap)[i] != pattern[i]) { Fail("vkCmdUpdateBuffer payload"); goto objdone; }
+    }
+    Step("V4 vkCmdUpdateBuffer payload landed in the BO");
+
+    /* ---- image create / bind / buffer<->image transfer ---- */
+    for (z = 0; z < sizeof(ici); z++) ((unsigned char *)&ici)[z] = 0;
+    ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ici.imageType = VK_IMAGE_TYPE_2D;
+    ici.format = VK_FORMAT_R8G8B8A8_UNORM;
+    ici.extent.width = 64; ici.extent.height = 64; ici.extent.depth = 1;
+    ici.mipLevels = 1; ici.arrayLayers = 1;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                VK_IMAGE_USAGE_SAMPLED_BIT;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    r = CreateImage(device, &ici, NULL, &image);
+    if (r != VK_SUCCESS || !image) { Fail("vkCreateImage"); goto objdone; }
+
+    for (z = 0; z < sizeof(ireq); z++) ((unsigned char *)&ireq)[z] = 0;
+    GetImageReq(device, image, &ireq);
+    for (z = 0; z < sizeof(mai); z++) ((unsigned char *)&mai)[z] = 0;
+    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    mai.allocationSize = ireq.size < 4096 ? 4096 : ireq.size;
+    mai.memoryTypeIndex = memType;
+    r = AllocateMemory(device, &mai, NULL, &imageMem);
+    if (r != VK_SUCCESS || !imageMem) { Fail("vkAllocateMemory (image)"); goto objdone; }
+    r = BindImageMemory(device, image, imageMem, 0);
+    if (r != VK_SUCCESS) { Fail("vkBindImageMemory"); goto objdone; }
+
+    for (z = 0; z < sizeof(vci); z++) ((unsigned char *)&vci)[z] = 0;
+    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vci.image = image;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format = VK_FORMAT_R8G8B8A8_UNORM;
+    vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    vci.subresourceRange.levelCount = 1;
+    vci.subresourceRange.layerCount = 1;
+    r = CreateImageView(device, &vci, NULL, &view);
+    if (r != VK_SUCCESS || !view) { Fail("vkCreateImageView"); goto objdone; }
+
+    for (z = 0; z < sizeof(region); z++) ((unsigned char *)&region)[z] = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent.width = 64; region.imageExtent.height = 64; region.imageExtent.depth = 1;
+
+    /* Fill the source buffer with a deterministic pattern for the round trip. */
+    for (i = 0; i < 16384; i++) ((unsigned char *)srcMap)[i] = (unsigned char)(i * 7 + 3);
+    for (i = 0; i < 16384; i++) ((unsigned char *)dstMap)[i] = 0xCC;
+
+    BeginCommandBuffer(cb, &cbbi);
+    CmdCopyBufferToImage(cb, srcBuf, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    CmdCopyImageToBuffer(cb, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstBuf, 1, &region);
+    EndCommandBuffer(cb);
+    if (QueueSubmit(queue, 1, &si, fence) != VK_SUCCESS) { Fail("vkQueueSubmit (image)"); goto objdone; }
+
+    for (i = 0; i < 16384; i++) {
+        if (((unsigned char *)dstMap)[i] != ((unsigned char *)srcMap)[i]) {
+            Fail("image round-trip mismatch"); goto objdone;
+        }
+    }
+    Step("V4 image (64x64 R8G8B8A8) buffer->image->buffer round-trip OK");
+
+    /* ---- semaphore: submit signal + wait, then destroy ---- */
+    for (z = 0; z < sizeof(sci); z++) ((unsigned char *)&sci)[z] = 0;
+    sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    if (CreateSemaphore(device, &sci, NULL, &sem) != VK_SUCCESS) { Fail("vkCreateSemaphore"); goto objdone; }
+    si.signalSemaphoreCount = 1;
+    si.pSignalSemaphores = &sem;
+    if (QueueSubmit(queue, 1, &si, fence) != VK_SUCCESS) { Fail("vkQueueSubmit (signal)"); goto objdone; }
+    si.signalSemaphoreCount = 0;
+    si.pSignalSemaphores = NULL;
+    si.waitSemaphoreCount = 1;
+    si.pWaitSemaphores = &sem;
+    si.pWaitDstStageMask = &waitStage;
+    if (QueueSubmit(queue, 1, &si, fence) != VK_SUCCESS) { Fail("vkQueueSubmit (wait)"); goto objdone; }
+    si.waitSemaphoreCount = 0;
+    si.pWaitSemaphores = NULL;
+    si.pWaitDstStageMask = NULL;
+    Step("V4 semaphore signal/wait accepted by the queue");
+
+    /* ---- events ---- */
+    for (z = 0; z < sizeof(eci); z++) ((unsigned char *)&eci)[z] = 0;
+    eci.sType = VK_STRUCTURE_TYPE_EVENT_CREATE_INFO;
+    if (CreateEvent(device, &eci, NULL, &ev) != VK_SUCCESS) { Fail("vkCreateEvent"); goto objdone; }
+    if (GetEventStatus(device, ev) != VK_EVENT_RESET) { Fail("event initial state"); goto objdone; }
+    if (SetEvent(device, ev) != VK_SUCCESS ||
+        GetEventStatus(device, ev) != VK_EVENT_SET) { Fail("vkSetEvent"); goto objdone; }
+    if (ResetEvent(device, ev) != VK_SUCCESS ||
+        GetEventStatus(device, ev) != VK_EVENT_RESET) { Fail("vkResetEvent"); goto objdone; }
+    Step("V4 event set/reset/query OK");
+
+    /* ---- shader module + compute pipeline objects (stubs) ---- */
+    {
+        static const uint32_t spirv[] = { 0x07230203u, 0x00010000u, 0x00000000u, 0x00000001u };
+        for (z = 0; z < sizeof(smci); z++) ((unsigned char *)&smci)[z] = 0;
+        smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        smci.codeSize = sizeof(spirv);
+        smci.pCode = spirv;
+        if (CreateShaderModule(device, &smci, NULL, &module) != VK_SUCCESS) {
+            Fail("vkCreateShaderModule"); goto objdone;
+        }
+    }
+
+    for (z = 0; z < sizeof(dslci); z++) ((unsigned char *)&dslci)[z] = 0;
+    dslci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    if (CreateDescriptorSetLayout(device, &dslci, NULL, &dsl) != VK_SUCCESS) {
+        Fail("vkCreateDescriptorSetLayout"); goto objdone;
+    }
+
+    for (z = 0; z < sizeof(plci); z++) ((unsigned char *)&plci)[z] = 0;
+    plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plci.setLayoutCount = 1;
+    plci.pSetLayouts = &dsl;
+    if (CreatePipelineLayout(device, &plci, NULL, &pl) != VK_SUCCESS) {
+        Fail("vkCreatePipelineLayout"); goto objdone;
+    }
+
+    for (z = 0; z < sizeof(dps); z++) ((unsigned char *)&dps)[z] = 0;
+    dps.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    dps.descriptorCount = 1;
+    for (z = 0; z < sizeof(dpci); z++) ((unsigned char *)&dpci)[z] = 0;
+    dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    dpci.maxSets = 1;
+    dpci.poolSizeCount = 1;
+    dpci.pPoolSizes = &dps;
+    if (CreateDescriptorPool(device, &dpci, NULL, &dpool) != VK_SUCCESS) {
+        Fail("vkCreateDescriptorPool"); goto objdone;
+    }
+
+    for (z = 0; z < sizeof(dsai); z++) ((unsigned char *)&dsai)[z] = 0;
+    dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dsai.descriptorPool = dpool;
+    dsai.descriptorSetCount = 1;
+    dsai.pSetLayouts = &dsl;
+    if (AllocateDescriptorSets(device, &dsai, &dset) != VK_SUCCESS) {
+        Fail("vkAllocateDescriptorSets"); goto objdone;
+    }
+
+    for (z = 0; z < sizeof(stage); z++) ((unsigned char *)&stage)[z] = 0;
+    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stage.module = module;
+    stage.pName = "main";
+
+    for (z = 0; z < sizeof(cpci); z++) ((unsigned char *)&cpci)[z] = 0;
+    cpci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    cpci.stage = stage;
+    cpci.layout = pl;
+    if (CreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpci, NULL, &pipeline) != VK_SUCCESS || !pipeline) {
+        Fail("vkCreateComputePipelines"); goto objdone;
+    }
+    Step("V4 shader module + descriptor + compute pipeline objects OK");
+
+    /* ---- sampler, render pass, framebuffer ---- */
+    for (z = 0; z < sizeof(samci); z++) ((unsigned char *)&samci)[z] = 0;
+    samci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samci.magFilter = VK_FILTER_NEAREST;
+    samci.minFilter = VK_FILTER_NEAREST;
+    samci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    samci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samci.maxLod = 1.0f;
+    if (CreateSampler(device, &samci, NULL, &sampler) != VK_SUCCESS) { Fail("vkCreateSampler"); goto objdone; }
+
+    for (z = 0; z < sizeof(att); z++) ((unsigned char *)&att)[z] = 0;
+    att.format = VK_FORMAT_R8G8B8A8_UNORM;
+    att.samples = VK_SAMPLE_COUNT_1_BIT;
+    att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    att.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    att.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    att.finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    for (z = 0; z < sizeof(ref); z++) ((unsigned char *)&ref)[z] = 0;
+    ref.attachment = 0;
+    ref.layout = VK_IMAGE_LAYOUT_GENERAL;
+
+    for (z = 0; z < sizeof(sub); z++) ((unsigned char *)&sub)[z] = 0;
+    sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    sub.colorAttachmentCount = 1;
+    sub.pColorAttachments = &ref;
+
+    for (z = 0; z < sizeof(rpci); z++) ((unsigned char *)&rpci)[z] = 0;
+    rpci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    rpci.attachmentCount = 1;
+    rpci.pAttachments = &att;
+    rpci.subpassCount = 1;
+    rpci.pSubpasses = &sub;
+    if (CreateRenderPass(device, &rpci, NULL, &pass) != VK_SUCCESS) { Fail("vkCreateRenderPass"); goto objdone; }
+
+    for (z = 0; z < sizeof(fbci); z++) ((unsigned char *)&fbci)[z] = 0;
+    fbci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    fbci.renderPass = pass;
+    fbci.attachmentCount = 1;
+    fbci.pAttachments = &view;
+    fbci.width = 64; fbci.height = 64; fbci.layers = 1;
+    if (CreateFramebuffer(device, &fbci, NULL, &fb) != VK_SUCCESS) { Fail("vkCreateFramebuffer"); goto objdone; }
+    Step("V4 sampler + render pass + framebuffer OK");
+
+    ok = 1;
+
+objdone:
+    if (fb)          DestroyFramebuffer(device, fb, NULL);
+    if (pass)        DestroyRenderPass(device, pass, NULL);
+    if (sampler)     DestroySampler(device, sampler, NULL);
+    if (pipeline)    DestroyPipeline(device, pipeline, NULL);
+    if (dset)        { VkDescriptorSet one = dset; FreeDescriptorSets(device, dpool, 1, &one); }
+    if (dpool)       DestroyDescriptorPool(device, dpool, NULL);
+    if (pl)          DestroyPipelineLayout(device, pl, NULL);
+    if (dsl)         DestroyDescriptorSetLayout(device, dsl, NULL);
+    if (module)      DestroyShaderModule(device, module, NULL);
+    if (ev)          DestroyEvent(device, ev, NULL);
+    if (sem)         DestroySemaphore(device, sem, NULL);
+    if (fence)       DestroyFence(device, fence, NULL);
+    if (view)        DestroyImageView(device, view, NULL);
+    if (image)       DestroyImage(device, image, NULL);
+    if (imageMem)    FreeMemory(device, imageMem, NULL);
+    if (pool)        DestroyCommandPool(device, pool, NULL);
+    if (srcMap)      UnmapMemory(device, srcMem);
+    if (dstMap)      UnmapMemory(device, dstMem);
+    if (srcBuf)      DestroyBuffer(device, srcBuf, NULL);
+    if (dstBuf)      DestroyBuffer(device, dstBuf, NULL);
+    if (srcMem)      FreeMemory(device, srcMem, NULL);
+    if (dstMem)      FreeMemory(device, dstMem, NULL);
+
+    return (ok == 1) ? 0 : 1;
+}
+
 static int Run(void)
 {
     VkInstance instance = VK_NULL_HANDLE;
@@ -288,6 +763,10 @@ static int Run(void)
     }
     if (!ok) { Fail("non-zero fill mismatch"); goto done; }
     Step("V3 non-zero fill OK (host fallback)");
+
+    /* ---- V4 object model: images, semaphores, events, pipelines ---- */
+    if (RunDeviceObjects(instance, device, queue, visibleType) != 0) goto done;
+    Step("V4 device-object coverage done");
 
     rc = 0;
 

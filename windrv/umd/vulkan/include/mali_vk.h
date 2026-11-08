@@ -52,6 +52,28 @@ typedef struct MaliVkBuffer_T {
     uint64_t      MemOffset;
 } MaliVkBuffer;
 
+typedef struct MaliVkImage_T {
+    MaliVkDevice         *Dev;
+    VkImageType           Type;
+    VkFormat              Format;
+    VkExtent3D            Extent;
+    uint32_t              MipLevels;
+    uint32_t              ArrayLayers;
+    VkSampleCountFlagBits Samples;
+    VkImageTiling         Tiling;
+    VkImageUsageFlags     Usage;
+    uint64_t              Size;
+    MaliVkMemory         *Mem;
+    uint64_t              MemOffset;
+} MaliVkImage;
+
+typedef struct MaliVkImageView_T {
+    MaliVkDevice    *Dev;
+    MaliVkImage     *Image;
+    VkImageViewType  ViewType;
+    VkFormat         Format;
+} MaliVkImageView;
+
 typedef struct MaliVkCommandPool_T {
     MaliVkDevice *Dev;
     uint32_t      Count;
@@ -59,16 +81,18 @@ typedef struct MaliVkCommandPool_T {
 } MaliVkCommandPool;
 
 /* A recorded GPU action. */
-#define MALI_VK_OP_FILL 1u
-#define MALI_VK_OP_COPY 2u
+#define MALI_VK_OP_FILL   1u
+#define MALI_VK_OP_COPY   2u
+#define MALI_VK_OP_UPDATE 3u
 
 typedef struct MaliVkOp {
-    uint32_t    Kind;      /* MALI_VK_OP_*                                 */
-    uint32_t    Value;     /* fill pattern                                 */
+    uint32_t    Kind;       /* MALI_VK_OP_*                                 */
+    uint32_t    Value;      /* fill pattern                                 */
     uint64_t    Size;
-    uint64_t    DstGpuVa;  /* destination GPU VA                           */
-    void       *DstCpu;    /* destination CPU pointer (copy)               */
-    const void *SrcCpu;    /* source CPU pointer (copy)                    */
+    uint64_t    DstGpuVa;   /* destination GPU VA                           */
+    void       *DstCpu;     /* destination CPU pointer                      */
+    const void *SrcCpu;     /* source CPU pointer                           */
+    void       *DataAlloc;  /* inline payload allocated for update op       */
 } MaliVkOp;
 
 #define MALI_VK_MAX_OPS 256
@@ -86,6 +110,31 @@ typedef struct MaliVkFence_T {
     MaliVkDevice *Dev;
     uint32_t      Signaled;   /* VkBool32 */
 } MaliVkFence;
+
+typedef struct MaliVkSemaphore_T {
+    MaliVkDevice *Dev;
+    uint32_t      Signaled;
+} MaliVkSemaphore;
+
+typedef struct MaliVkEvent_T {
+    MaliVkDevice *Dev;
+    uint32_t      Signaled;
+} MaliVkEvent;
+
+typedef struct MaliVkShaderModule_T {
+    MaliVkDevice *Dev;
+    uint32_t      CodeSize;
+    uint32_t     *Code;
+} MaliVkShaderModule;
+
+typedef struct MaliVkDescriptorSetLayout_T { MaliVkDevice *Dev; } MaliVkDescriptorSetLayout;
+typedef struct MaliVkPipelineLayout_T      { MaliVkDevice *Dev; } MaliVkPipelineLayout;
+typedef struct MaliVkDescriptorPool_T       { MaliVkDevice *Dev; } MaliVkDescriptorPool;
+typedef struct MaliVkDescriptorSet_T        { MaliVkDevice *Dev; } MaliVkDescriptorSet;
+typedef struct MaliVkRenderPass_T           { MaliVkDevice *Dev; } MaliVkRenderPass;
+typedef struct MaliVkFramebuffer_T          { MaliVkDevice *Dev; } MaliVkFramebuffer;
+typedef struct MaliVkPipeline_T             { MaliVkDevice *Dev; VkPipelineBindPoint BindPoint; } MaliVkPipeline;
+typedef struct MaliVkSampler_T              { MaliVkDevice *Dev; } MaliVkSampler;
 
 /* ------------------------------------------------------------------ */
 /* Tunables                                                            */

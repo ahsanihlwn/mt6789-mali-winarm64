@@ -35,12 +35,15 @@ umd/
     include/mali_vk.h       internal ICD types
     src/icd_entry.c         Khronos loader interface + entry-point resolution
     src/icd_device.c        instance, physical device, device, memory, buffers
-    src/icd_queue.c         command buffers, fills, copies, fences, vkQueueSubmit
+    src/icd_queue.c         command buffers, fill/copy/update, fences, semaphores,
+                            events, vkQueueSubmit
     src/mali_vk_icd.def     exported loader interface
     manifest/mali_g57_icd.json
-    test/mali_vk_smoke.c    V1–V3 end-to-end smoke test (links the ICD)
+    test/mali_vk_smoke.c    V1–V4 end-to-end smoke test (links the ICD, ARM64)
+    test/mali_vk_iface.c    host x64 entry-point/resolution self-test
     tools/fetch-deps.ps1    clones external\Vulkan-Headers (git-ignored)
-    tools/build-icd.ps1     builds build\mali_vk_icd.dll (+ smoke test)
+    tools/build-icd.ps1     builds build\mali_vk_icd.dll (+ ARM64 smoke test)
+    tools/build-icd-host.ps1 builds an x64 DLL + test and runs it here
 ```
 
 Everything builds to `windrv/umd/build/` (git-ignored).
@@ -54,13 +57,14 @@ cd windrv\umd
 
 cd vulkan
 .\tools\fetch-deps.ps1           # needs git + network, once
-.\tools\build-icd.ps1            # needs the fetched headers
+.\tools\build-icd.ps1            # ARM64 ICD + smoke test
+.\tools\build-icd-host.ps1       # x64 ICD + self-test, builds AND runs here
 ```
 
 `build-icd.ps1` also emits `build\mali_vk_smoke.exe`, a CRT-free ARM64 test that
 links the ICD's import library and resolves every entry point through
 `vkGetInstanceProcAddr`, so no Vulkan loader is needed to run it. On the target
-it walks V1–V3 from `../GRAPHICS-STACK.md` and prints `RESULT: PASS`:
+it walks V1–V4 from `../GRAPHICS-STACK.md` and prints `RESULT: PASS`:
 
 ```
 V1 instance created
@@ -69,6 +73,35 @@ V1 device + queue created
 V2 buffer object mapped, CPU r/w OK
 V3 GPU vkCmdFillBuffer(0) cleared 1 KiB via a WRITE_VALUE chain
 V3 non-zero fill OK (host fallback)
+V4 vkCmdUpdateBuffer payload landed in the BO
+V4 image (64x64 R8G8B8A8) buffer->image->buffer round-trip OK
+V4 semaphore signal/wait accepted by the queue
+V4 event set/reset/query OK
+V4 shader module + descriptor + compute pipeline objects OK
+V4 sampler + render pass + framebuffer OK
+RESULT: PASS
+```
+
+`build-icd-host.ps1` is the half that runs **without the tablet**: it builds the
+same sources as an x64 DLL, then checks that all 130 application entry points
+resolve through `vkGetInstanceProcAddr`, that the loader interface negotiates
+version 2, and that the chained `*Properties2` / `*Features2` / `*MemoryProperties2`
+queries fill their structures. It exits non-zero on any miss, so it is a cheap
+regression gate for the whole dispatch table:
+
+```
+loader/ICD interface
+  interface version   2
+instance queries
+  apiVersion          1.0
+  instance ext        VK_KHR_get_physical_device_properties2
+physical device queries (chained, no KMD needed)
+  properties2         Mali-G57 MC2 (MT6789) - Jalur A
+  memory types        2 (1 heap, 256 MB)
+  R8G8B8A8_UNORM      transfer + sampled + color
+entry points
+  resolved 130 / 130
+  adapters without KMD 0 (VK_SUCCESS)
 RESULT: PASS
 ```
 
@@ -129,14 +162,30 @@ port), which needs Mesa's NIR/Valhall compiler built for `aarch64-windows-msvc`.
 * Instance, physical device (reported only when the KMD is present), one queue
   family (graphics + compute + transfer), device creation
   (opens the KMD, powers the GPU, enables the MMU, allocates a chain BO).
+* Vulkan 1.1 *discovery* surface: `vkGetPhysicalDeviceProperties2` (with
+  `VkPhysicalDeviceIDProperties` — stable UUID + LUID — and
+  `VkPhysicalDeviceDriverProperties`), `*Features2`, `*MemoryProperties2`,
+  `*QueueFamilyProperties2`, `*FormatProperties2`, `*ImageFormatProperties2`,
+  the `*MemoryRequirements2` / `*BindMemory2` pair, and the
+  `VK_KHR_get_physical_device_properties2` extension.
 * `vkAllocateMemory` / `vkFreeMemory` / `vkMapMemory` → KMD buffer objects.
 * Buffers: `vkCreateBuffer`, `vkGetBufferMemoryRequirements`, `vkBindBufferMemory`,
-  `vkDestroyBuffer`.
-* Command buffers: pool/buffer create/reset/free, begin/end.
+  `vkGetBufferMemoryRequirements2`, `vkBindBufferMemory2`, `vkDestroyBuffer`.
+* Images: `vkCreateImage` (linear size model), `vkGetImageMemoryRequirements[2]`,
+  `vkBindImageMemory[2]`, `vkCreateImageView`, `vkGetImageSubresourceLayout`,
+  `vkCreateBufferView`. Transfers run on the host (`vkCmdCopyBufferToImage`,
+  `vkCmdCopyImageToBuffer`), which is legal while every BO is CPU-mapped.
+* Command buffers: pool/buffer create/reset/free, begin/end,
+  `vkCmdUpdateBuffer`, `vkCmdCopyBuffer`, `vkCmdFillBuffer`.
+* Synchronisation objects: fences, semaphores (submit wait/signal),
+  events (`vkSetEvent` / `vkResetEvent` / `vkCmdSetEvent` / `vkCmdResetEvent`).
+* Shader/pipeline/descriptor/render-pass/framebuffer/sampler objects are
+  created, tracked and destroyed. They are bookkeeping only until the
+  SPIR-V → Valhall compiler exists, so they accept work but do not execute it.
 * `vkCmdFillBuffer`: a **zero fill** is issued to the GPU as a `WRITE_VALUE`
   (`MALI_WRITE_VALUE_ZERO = 3`) job chain through the KMD; the completion is
-  checked via `JS_STATUS`. Non-zero fills and `vkCmdCopyBuffer` fall back to a
-  host-side fill/copy, which is legal because every BO is host-visible and
+  checked via `JS_STATUS`. Non-zero fills, updates and copies fall back to a
+  host-side implementation, which is legal because every BO is host-visible and
   host-coherent.
 * `vkCmdPipelineBarrier` (no-op), fences, `vkQueueSubmit`.
 
@@ -148,8 +197,8 @@ submission comes with the real job scheduler.
 
 | Missing | Blocked on |
 | --- | --- |
-| shaders / pipelines / descriptors | the SPIR-V → Valhall compiler (Mesa) — Jalur B |
-| images / samplers | needs Valhall tiling + the compiler |
+| shader execution (draws, dispatches) | the SPIR-V → Valhall compiler (Mesa) — Jalur B |
+| real image layouts / tiling / sampling | Valhall tiling + the compiler |
 | swapchain / WSI | a display path (WDDM render miniport or a BDA blit) |
 | async queues, timeline semaphores | kernel job scheduler + real IRQ |
 

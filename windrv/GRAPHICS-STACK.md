@@ -106,6 +106,22 @@ Slice pertama yang masuk akal dan **bisa diuji tanpa shader**:
 `vkCmdFillBuffer` / `vkCmdUpdateBuffer` → rangkaian job WRITE_VALUE → fence.
 Ini memvalidasi BO, mapping, submit, completion — tanpa butuh compiler ISA.
 
+Status terukur Jalur A (per `windrv/umd/README.md`):
+
+| Bukti | Cara uji | Hasil |
+| --- | --- | --- |
+| 130 entry point aplikasi resolve | `tools\build-icd-host.ps1` (x64, tanpa tablet) | **PASS 130/130** |
+| loader/ICD interface v2 | idem | **PASS** |
+| `Properties2` + UUID + LUID + driver props | idem | **PASS** |
+| `*Features2` / `*MemoryProperties2` / `*FormatProperties2` | idem | **PASS** |
+| `vkEnumeratePhysicalDevices` tanpa KMD = 0 adapter, `VK_SUCCESS` | idem | **PASS** |
+| fill nol di GPU (WRITE_VALUE chain) | `mali_vk_smoke.exe` di tablet | **PASS (V3)** |
+| image/BO round-trip, update, semaphore, event, pipeline stub | `mali_vk_smoke.exe` di tablet | **PASS (V4)** |
+
+Jadi Jalur A sudah **bukan** sekadar "bisa instance/device": permukaan Vulkan 1.0
++ 1.1-discovery sudah lengkap untuk object model, dan satu-satunya yang tersisa
+sebelum render nyata adalah **eksekusi shader** (Jalur B).
+
 **Jalur B — port Mesa PanVK (Valhall).**
 Ini yang memberi render nyata (segitiga, tekstur, compute). PanVK sudah tahu
 Valhall (G57), sudah punya compiler shader, dan sudah punya driver uji. Yang
@@ -240,14 +256,15 @@ Satu kolom satu tahap, satu baris satu bukti.
 | V1 | ICD: instance/device/queue | `vulkaninfo` melihat "Mali-G57 MC2" + 1 queue family |
 | V2 | ICD: memory/buffer | `vkAllocateMemory` menghasilkan BO, map, tulis dari CPU, terbaca GPU |
 | V3 | ICD: submit + fence | `vkCmdFillBuffer` (job WRITE_VALUE) + `vkWaitForFences` hijau |
-| V4 | ICD: pipeline + shader (butuh Mesa) | compute shader trivial menulis buffer; lalu segitiga offscreen |
+| V4a | ICD: object model tanpa shader | update/image/semaphore/event/pipeline-stub di `mali_vk_smoke.exe` hijau |
+| V4b | ICD: pipeline + shader (butuh Mesa) | compute shader trivial menulis buffer; lalu segitiga offscreen |
 | V5 | WSI win32 surface | swapchain present ke window (butuh WDDM/display miniport atau blit) |
 | X1 | DXVK di atas ICD | aplikasi D3D11 sederhana render di Mali |
 | X2 | vkd3d-proton di atas ICD | aplikasi D3D12 sederhana render di Mali |
 | G1 | Zink di atas ICD | aplikasi OpenGL sederhana render di Mali |
 | W3 | WDDM render-only | Mali muncul di Device Manager/Task Manager |
 
-Urutan yang disarankan: **U0 → V1 → V2 → V3 → (V4 = titik berat) → X1 → X2 → G1 → V5/W3`.
+Urutan yang disarankan: **U0 → V1 → V2 → V3 → V4a → (V4b = titik berat) → X1 → X2 → G1 → V5/W3`.
 
 ---
 
@@ -271,7 +288,9 @@ windrv/
       include/             header internal
       src/                 entry point loader + implementasi inti
       manifest/            mali_g57_icd.json (untuk loader Khronos)
-      tools/build-icd.ps1  build ICD (butuh Vulkan-Headers)
+      test/                smoke ARM64 (tablet) + iface test x64 (host)
+      tools/build-icd.ps1      build ICD ARM64 (butuh Vulkan-Headers)
+      tools/build-icd-host.ps1 build ICD x64 + self-test entry point, jalankan
   mesa/                    lingkungan build Jalur B (Meson cross-file + temuan)
     README.md              catatan kesiapan (terukur: apa yang jalan / absen)
     cross/                 template cross-file aarch64-windows-msvc (tanpa path hardcoded)
