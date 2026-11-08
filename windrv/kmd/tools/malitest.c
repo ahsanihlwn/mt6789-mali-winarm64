@@ -600,18 +600,36 @@ static int Run(void)
             if (Has(cmd, "--chain")) {
                 /* --chain N: N WRITE_VALUE jobs linked through next_job, each
                  * zeroing its own 8-byte sentinel at GpuVa+0x800+k*8. Proves
-                 * the JM walks the chain, not just the head descriptor. */
+                 * the JM walks the chain, not just the head descriptor.
+                 *
+                 * Knobs for bisecting the chain encoding:
+                 *   --chainidx  B   first job_index (default 1)
+                 *   --chain2type T  job type of every job after the first (2)
+                 *   --chaingap  N   descriptor stride in bytes (default 64)
+                 *   --chaindump     print each descriptor from the CPU view
+                 */
                 const char *chp = Find(cmd, "--chain");
-                unsigned n = 4, k;
+                const char *c2p = Find(cmd, "--chain2type");
+                const char *cip = Find(cmd, "--chainidx");
+                const char *cgp = Find(cmd, "--chaingap");
+                unsigned n = 4, k, t2 = 2, idxBase = 1, stride = 64;
                 if (chp) ParseU(chp, &n);
+                if (c2p) ParseU(c2p, &t2);
+                if (cip) ParseU(cip, &idxBase);
+                if (cgp) ParseU(cgp, &stride);
                 if (n < 1) n = 1;
                 if (n > 32) n = 32;
-                for (i = 0; i < 512; i++) w[i] = 0;
+                if (stride < 64) stride = 64;
+                if (stride & 3) stride = 64;
+                if ((unsigned long long)n * stride > 0x7C0) n = 0x7C0 / stride;
+                for (i = 0; i < 1024; i++) w[i] = 0;
                 for (k = 0; k < n; k++) {
-                    volatile unsigned *d = w + (k * 16);   /* 64-byte stride */
-                    unsigned long long nxt = bo.GpuVa + (unsigned long long)(k + 1) * 64;
+                    volatile unsigned *d = w + (k * (stride / 4));
+                    unsigned long long nxt = bo.GpuVa + (unsigned long long)(k + 1) * stride;
                     unsigned long long tgt = bo.GpuVa + 0x800 + (unsigned long long)k * 8;
-                    d[4] = (1u << 0) | (2u << 1) | ((k + 1) << 16);  /* WRITE_VALUE */
+                    unsigned jt = (k == 0) ? 2u : t2;
+                    d[4] = (1u << 0) | ((jt & 0x7Fu) << 1) | (((idxBase + k) & 0xFFFFu) << 16);
+                    d[5] = 0;
                     d[6] = (k + 1 < n) ? (unsigned)(nxt & 0xFFFFFFFFu) : 0;
                     d[7] = (k + 1 < n) ? (unsigned)(nxt >> 32) : 0;
                     d[8] = (unsigned)(tgt & 0xFFFFFFFFu);
@@ -621,7 +639,10 @@ static int Run(void)
                     *(volatile unsigned *)((volatile unsigned char *)w + 0x800 + k * 8) =
                         0xDEADBEEFu + k;
                 }
-                Out("chain: "); OutDec(n); Out(" WRITE_VALUE jobs, sentinels 0xDEADBEEF+n\r\n");
+                Out("chain: "); OutDec(n); Out(" jobs, type "); OutDec(t2);
+                Out(" idxbase "); OutDec(idxBase);
+                Out(" stride "); OutDec(stride);
+                Out(", sentinels 0xDEADBEEF+n\r\n");
             } else {
                 for (i = 0; i < 8; i++) w[i] = 0;
                 w[4] = (1u << 0) | ((jobType & 0x7Fu) << 1) | ((index & 0xFFFFu) << 16);
@@ -723,6 +744,16 @@ static int Run(void)
                     if (v == 0) ok++;
                 }
                 Out("\r\n  chain cleared "); OutDec(ok); Out("/"); OutDec(n); Out("\r\n");
+                if (Has(cmd, "--chaindump")) {
+                    for (k = 0; k < n; k++) {
+                        volatile unsigned *d = w + (k * 16);
+                        Out("  desc["); OutDec(k); Out("] w4 "); OutHex(d[4]);
+                        Out(" w6 "); OutHex(d[6]);
+                        Out(" w7 "); OutHex(d[7]);
+                        Out(" tgt "); OutHex(d[8]);
+                        Out(":"); OutHex(d[9]); Out("\r\n");
+                    }
+                }
             }
             if (Has(cmd, "--wv")) {
                 Out("  write_value result "); OutHex(w[0x40]); Out("\r\n");
