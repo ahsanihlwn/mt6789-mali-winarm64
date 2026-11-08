@@ -112,22 +112,31 @@ Valhall (G57), sudah punya compiler shader, dan sudah punya driver uji. Yang
 harus diganti: **backend DRM** (`/dev/dri`, ioctl panfrost/panthor, GEM, dma-buf,
 syncobj) → **libmali_umd kita**.
 
-Yang konkret perlu dikerjakan di jalur B:
+Yang konkret perlu dikerjakan di jalur B kini terperinci di
+[`PANVK-SHIM.md`](PANVK-SHIM.md): setiap kebutuhan panfrost/panvk dipetakan ke
+ABI kita dengan status ✅ siap / ⚠️ perlu glue / ❌ belum ada, plus usulan ABI v3.
+Ringkasnya:
 
 | PanVK/panfrost harap | Windows/MT6789 punya | Tindakan |
 | --- | --- | --- |
-| `open("/dev/dri/renderD128")` | device interface GUID | `MaliUmdOpen()` |
-| `DRM_IOCTL_PANFROST_SUBMIT` | `IOCTL_MALI_JOB_SUBMIT` | shim + job-chain builder |
-| `DRM_IOCTL_PANFROST_CREATE_BO` | `IOCTL_MALI_ALLOC_BO` | shim |
-| GEM mmap / dma-buf | `UserVa` dari KMD | shim |
-| `drmSyncobj` / fences | JOB_IRQ + poll | implementasi fence di ICD |
-| `panfrost` device query (`PANFROST_DEV_QUERY`) | KMD caps + register readback | isi struct dari caps |
-| Linux `pthread`/`epoll` | Win32 `CreateThread`/`WaitForSingleObject` | port tipis |
+| `open("/dev/dri/renderD128")` | device interface GUID | shim `open` → `MaliUmdOpen()` |
+| `DRM_PANFROST_SUBMIT` | `IOCTL_MALI_JOB_SUBMIT` | shim + `mali_jc` |
+| `DRM_PANFROST_CREATE_BO` | `IOCTL_MALI_ALLOC_BO` | shim |
+| GEM mmap / dma-buf | `UserVa` dari KMD | shim (dma-buf = P2) |
+| `drmSyncobj` / fences | JOB_IRQ + poll | **disintesis di shim** (submit sinkron) |
+| `PANFROST_DEV_QUERY` | KMD caps + `REG_READ` | isi struct dari register |
+| Linux `pthread`/`epoll` | `CreateThread`/`WaitForSingleObject` | port tipis |
 
-Realitas build: Mesa untuk `aarch64-windows-msvc` belum didukung rapi (Meson +
-MinGW/LLVM). Ekspektasi kerja: **menulis/menyesuaikan build system** dulu (cross
-file Meson + toolchain clang-cl + WDK/SDK), baru port kode. Ini pekerjaan besar
-tapi tertutup dan terukur.
+Temuan penting (lihat `PANVK-SHIM.md` §0): **PanVK memakai model yang sama dengan
+kita** — chain dibangun di userspace, `submit` hanya mengirim VA kepala chain —
+jadi kebutuhan fitur KMD baru untuk smoke test **kecil**; yang besar justru
+**build Mesa untuk ARM64 Windows** dan **shim Win32/DRM**, dua-duanya di sisi kita.
+
+Realitas build (terukur — lihat [`mesa/README.md`](mesa/README.md)): Meson +
+clang-cl cross ke `aarch64-windows-msvc` **sudah jalan** di mesin dev (objek ARM64
+`0xAA64` + arsip statik terbukti, `tools\build-smoke.ps1`). Yang masih menghambat:
+**CRT MSVC ARM64 belum terpasang** (`vcruntime`/`libcmt`/`libcpmt` absen), jadi
+menautkan `.exe`/`.dll` belum bisa. Itu prasyarat setup host, bukan perubahan kode.
 
 ### 2.3 Shader — kompilasi vs cache
 
@@ -248,6 +257,7 @@ Urutan yang disarankan: **U0 → V1 → V2 → V3 → (V4 = titik berat) → X1 
 windrv/
   GRAPHICS-STACK.md        dokumen ini
   WDDM-PATH.md             jalur "Windows mengenali Mali"
+  PANVK-SHIM.md            jembatan Jalur B: panfrost/DRM → ABI kita + ABI v3
   umd/                     user-mode driver (kita)
     include/mali_umd.h     API winsys (publik, dipakai ICD)
     include/mali_jc.h      builder job-chain (encoding descriptor JM)
@@ -262,6 +272,11 @@ windrv/
       src/                 entry point loader + implementasi inti
       manifest/            mali_g57_icd.json (untuk loader Khronos)
       tools/build-icd.ps1  build ICD (butuh Vulkan-Headers)
+  mesa/                    lingkungan build Jalur B (Meson cross-file + temuan)
+    README.md              catatan kesiapan (terukur: apa yang jalan / absen)
+    cross/                 template cross-file aarch64-windows-msvc (tanpa path hardcoded)
+    smoke/                 target uji minimal (compile objek ARM64 + arsip)
+    tools/                 setup.ps1, build-smoke.ps1, fetch-mesa.ps1
   kmd/                     kernel-mode driver (sudah ada)
 ```
 

@@ -82,16 +82,23 @@ windrv/
   HARDWARE-MT6789.md     register map, power/clock topology, SoC facts
   ROADMAP.md             phases and current validation status
   WDDM-PATH.md           plan for making Windows enumerate Mali as a GPU
+  PANVK-SHIM.md          PanVK (Jalur B): panfrost/DRM -> our ABI, gaps, ABI v3
   REFERENCES.md          curated external references
   umd/                   user-mode driver stack (winsys + Vulkan ICD)
     include/mali_umd.h   winsys API (thin wrapper over the IOCTL ABI)
     src/mali_umd.c       winsys implementation (CRT-free)
     src/mali_umd_test.c  round-trip test (open/BO/job)
+    include/mali_jc.h    job-chain builder (JM descriptor encoding)
+    src/mali_jc.c        builder implementation (pure C: host + ARM64)
     tools/build-umd.ps1  builds the test for ARM64
+    tools/jc_test.c      host unit test for the builder (runs on this machine)
     vulkan/              Vulkan ICD (Jalur A from GRAPHICS-STACK.md)
       src/               loader interface + core objects + queue/submit
       manifest/          mali_g57_icd.json (Khronos loader manifest)
       tools/             fetch-deps.ps1, build-icd.ps1
+  mesa/                  Jalur B build environment (Meson cross-file + findings)
+    cross/               aarch64-windows-msvc Meson cross file (template)
+    tools/               setup.ps1, build-smoke.ps1, fetch-mesa.ps1
   kmd/
     build.ps1            build + package (+ optional test signing)
     MaliKmd.inf          driver package description

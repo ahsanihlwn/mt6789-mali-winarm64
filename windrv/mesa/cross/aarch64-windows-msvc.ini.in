@@ -1,0 +1,33 @@
+# ---------------------------------------------------------------------------
+# Meson cross file: aarch64-windows-msvc via the LLVM toolchain (clang-cl).
+#
+# This is a TEMPLATE. Paths are machine-specific, so they are not committed:
+# tools/setup.ps1 resolves the toolchain (windrv/kmd/tools/winsdk.ps1), fills the
+# @TOKENS@ below, and writes the result to build/cross.ini (git-ignored).
+#
+# clang-cl (not the GNU clang driver) is used so Meson takes its MSVC-like
+# path: it knows the linker is link.exe and accepts /libpath: etc. The GNU
+# driver chokes on Meson's `-Wl,--version` linker probe for an MSVC target.
+# The aarch64 target is requested with /clang:--target=...
+# ---------------------------------------------------------------------------
+
+[binaries]
+c       = '@CLANGCL@'
+cpp     = '@CLANGCL@'
+ar      = '@LLVM_AR@'
+windres = '@LLVM_RC@'
+
+[host_machine]
+system     = 'windows'
+cpu_family = 'aarch64'
+cpu        = 'aarch64'
+endian     = 'little'
+
+[properties]
+needs_exe_wrapper = true
+
+[built-in options]
+c_args   = ['/clang:--target=aarch64-pc-windows-msvc', '/imsvc', '@SDK_UCRT@', '/imsvc', '@SDK_SHARED@', '/imsvc', '@SDK_UM@']
+cpp_args = ['/clang:--target=aarch64-pc-windows-msvc', '/imsvc', '@SDK_UCRT@', '/imsvc', '@SDK_SHARED@', '/imsvc', '@SDK_UM@']
+c_link_args   = ['/clang:--target=aarch64-pc-windows-msvc', '/libpath:@LIB_UM_ARM64@', '/libpath:@LIB_UCRT_ARM64@', '/libpath:@VC_LIB_ARM64@']
+cpp_link_args = ['/clang:--target=aarch64-pc-windows-msvc', '/libpath:@LIB_UM_ARM64@', '/libpath:@LIB_UCRT_ARM64@', '/libpath:@VC_LIB_ARM64@']

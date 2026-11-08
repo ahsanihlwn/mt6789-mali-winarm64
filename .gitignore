@@ -13,6 +13,8 @@
 # ---------------------------------------------------------------------------
 /windrv/kmd/build/
 /windrv/umd/build/
+/windrv/mesa/build/
+/windrv/mesa/.venv/
 /build/
 *.obj
 *.pdb
