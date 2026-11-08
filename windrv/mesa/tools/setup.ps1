@@ -18,7 +18,8 @@ param(
     [string]$WdkRoot  = $env:WDK_ROOT,
     [string]$Clang    = $env:MALI_CLANG,
     [string]$Linker   = $env:MALI_LINKER,
-    [string]$Python   = $env:MALI_PYTHON
+    [string]$Python   = $env:MALI_PYTHON,
+    [switch]$SystemCrt
 )
 
 $ErrorActionPreference = 'Stop'
@@ -81,17 +82,41 @@ try {
     # ---- 4. materialise cross.ini -----------------------------------------
     $build = Join-Path $mesaRoot 'build'
     New-Item -ItemType Directory -Force -Path $build | Out-Null
+
+    # Arg lists are built here (not in the template) because they depend on the
+    # link recipe. Forward slashes keep the INI free of backslash escapes.
+    function Q([string[]]$items) {
+        return (($items | ForEach-Object { "'" + ($_ -replace '\\', '/') + "'" }) -join ', ')
+    }
+
+    $target = '/clang:--target=aarch64-pc-windows-msvc'
+    $cArgs  = @($target, '/imsvc', $t.SdkUcrt, '/imsvc', $t.SdkShared, '/imsvc', $t.SdkUm)
+
+    $linkArgs = @($target, '-fuse-ld=lld', "/libpath:$libUmArm64", "/libpath:$libUcrtArm64", "/libpath:$vcLibArm64")
+
+    if (-not $SystemCrt) {
+        # CRT-free recipe: the SDK's dynamic UCRT + GS cookie + msvcurt + our
+        # small C++ runtime shim, instead of the missing vcruntime/libcmt/libcpmt.
+        $shimLib = Join-Path $build 'runtime\mali_cxxrt.lib'
+        if (-not (Test-Path -LiteralPath $shimLib)) {
+            Write-Host 'Building the ARM64 C++ runtime shim (build-runtime.ps1) ...'
+            & (Join-Path $mesaRoot 'tools\build-runtime.ps1') -KitsRoot $KitsRoot -WdkRoot $WdkRoot -Clang $Clang -Linker $Linker
+            if (-not (Test-Path -LiteralPath $shimLib)) { throw 'runtime shim build failed' }
+        }
+        $linkArgs += @('/nodefaultlib',
+                       'ucrt.lib', 'BufferOverflow.lib', 'msvcurt.lib', 'kernel32.lib', 'ntdll.lib',
+                       $shimLib)
+    }
+
     $tpl  = Get-Content -Raw -LiteralPath (Join-Path $mesaRoot 'cross\aarch64-windows-msvc.ini.in')
     $map  = @{
         '@CLANGCL@'        = To-Fwd $t.ClangCl
         '@LLVM_AR@'        = To-Fwd $llvmAr
         '@LLVM_RC@'        = To-Fwd $llvmRc
-        '@SDK_UCRT@'       = To-Fwd $t.SdkUcrt
-        '@SDK_SHARED@'     = To-Fwd $t.SdkShared
-        '@SDK_UM@'         = To-Fwd $t.SdkUm
-        '@LIB_UM_ARM64@'   = To-Fwd $libUmArm64
-        '@LIB_UCRT_ARM64@' = To-Fwd $libUcrtArm64
-        '@VC_LIB_ARM64@'   = To-Fwd $vcLibArm64
+        '@C_ARGS@'         = Q $cArgs
+        '@CPP_ARGS@'       = Q $cArgs
+        '@C_LINK_ARGS@'    = Q $linkArgs
+        '@CPP_LINK_ARGS@'  = Q $linkArgs
     }
     foreach ($k in $map.Keys) { $tpl = $tpl.Replace($k, $map[$k]) }
     $crossOut = Join-Path $build 'cross.ini'
@@ -102,20 +127,21 @@ try {
     Write-Host ("  clang-cl  {0}" -f $t.ClangCl)
     Write-Host ("  libs um   {0}" -f $libUmArm64)
     Write-Host ("  libs ucrt {0}" -f $libUcrtArm64)
+    Write-Host ("  link      {0}" -f $(if ($SystemCrt) { 'system CRT (default libs)' } else { 'CRT-free recipe + mali_cxxrt shim' }))
 
     # ---- 5. honest readiness check ----------------------------------------
-    # Mesa links a normal C/C++ runtime. Our own tools are CRT-free, so the
-    # question "can we even link an ARM64 CRT exe?" decides whether Messon's
-    # sanity link can succeed.
+    # The normal MSVC ARM64 CRT is missing on this host, so the default
+    # (blocking) recipe is the system one. The CRT-free recipe + shim is what
+    # makes Meson's sanity links pass without it.
     $vcruntime = Join-Path $vcLibArm64 'vcruntime.lib'
     $libcmt    = Join-Path $vcLibArm64 'libcmt.lib'
     if ((Test-Path -LiteralPath $vcruntime) -and (Test-Path -LiteralPath $libcmt)) {
-        Write-Host 'ARM64 MSVC CRT present: Meson sanity link has a chance.' -ForegroundColor Green
+        Write-Host 'ARM64 MSVC CRT present.' -ForegroundColor Green
     }
     else {
-        Write-Host 'ARM64 MSVC CRT (vcruntime/libcmt) is MISSING.' -ForegroundColor Yellow
-        Write-Host '  Install the VS Build Tools workload for ARM64 (e.g. "MSVC v143/v145 -' -ForegroundColor Yellow
-        Write-Host '  ARM64 build tools") to let Meson/Mesa link. See README.md.' -ForegroundColor Yellow
+        Write-Host 'ARM64 MSVC CRT (vcruntime/libcmt/libcpmt) is not installed.' -ForegroundColor Yellow
+        Write-Host '  Meson will use the CRT-free recipe + mali_cxxrt shim instead.' -ForegroundColor Yellow
+        Write-Host '  Verify it with tools\link-probe.ps1 and tools\build-runtime.ps1.' -ForegroundColor Yellow
     }
 }
 catch {

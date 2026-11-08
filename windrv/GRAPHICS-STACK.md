@@ -150,14 +150,23 @@ jadi kebutuhan fitur KMD baru untuk smoke test **kecil**; yang besar justru
 
 Realitas build (terukur — lihat [`mesa/README.md`](mesa/README.md)): Meson +
 clang-cl cross ke `aarch64-windows-msvc` **sudah jalan** di mesin dev (objek ARM64
-`0xAA64` + arsip statik terbukti, `tools\build-smoke.ps1`). Yang masih menghambat:
-**CRT MSVC ARM64 belum terpasang** (`vcruntime`/`libcmt`/`libcpmt` absen), jadi
-menautkan `.exe`/`.dll` belum bisa. Terukur: yang kurang **bukan** libc/header/
-linker — `msvcurt.lib` + `libucrt.lib` + `BufferOverflow.lib` + `ntdll.lib`
-sudah menyelesaikan libc, dan yang tersisa persis internal `vcruntime` ARM64
-(`__GSHandlerCheck`, `__security_push/pop_cookie`, `_InterlockedAnd/Or`). Jadi
-ada dua jalan: pasang workload ARM64 (sekali, ~1 GB), atau tambahkan shim
-`vcruntime` mini di `windrv/mesa/runtime/`. Detail di `mesa/README.md`.
+`0xAA64` + arsip statik terbukti, `tools\build-smoke.ps1`). Tembok CRT **sudah
+dilewati**: yang hilang cuma runtime C++, dan itu diganti shim kecil kita sendiri
+(`mesa/runtime/` — `operator new/delete`, `atexit`, `_Raise_handler`,
+`mainCRTStartup`, `_DllMainCRTStartup`), ditambah resep link CRT-free
+(`ucrt.lib` dinamis + `BufferOverflow.lib` + `msvcurt.lib` + `kernel32.lib` +
+`ntdll.lib`, `-fuse-ld=lld`, `/nodefaultlib`). Terbukti: `.exe` C dan `.dll` ber-STL
+menaut hanya ke apiset UCRT — tanpa `msvcp140.dll`/`vcruntime140.dll`.
+(`tools\build-runtime.ps1`, `tools\link-probe.ps1`.)
+
+Tembok berikutnya **bukan CRT**: `meson setup` untuk panfrost berhenti di
+`ERROR: Feature llvm cannot be enabled: CLC requires LLVM`. PanVK menyematkan
+kernel CL (`src/panfrost/libpan/*.cl`) yang dikompilasi `mesa_clc` (OpenCL-C
+compiler Mesa) yang menaut LLVM; mesin ini hanya punya `LLVM-C.lib`, tanpa header
+LLVM. Tiga jalan: **pin Mesa versi lama** yang PanVK-nya belum butuh CLC
+(paling murah, host tak tersentuh), pasang LLVM dev (melanggar aturan
+no-install), atau patch Mesa agar melewati `libpan`/CLC (invasif). Detail di
+[`mesa/README.md`](mesa/README.md).
 
 ### 2.3 Shader — kompilasi vs cache
 

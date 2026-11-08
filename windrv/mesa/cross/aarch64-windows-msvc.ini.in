@@ -9,6 +9,11 @@
 # path: it knows the linker is link.exe and accepts /libpath: etc. The GNU
 # driver chokes on Meson's `-Wl,--version` linker probe for an MSVC target.
 # The aarch64 target is requested with /clang:--target=...
+#
+# The *_args / *_link_args lists are built by setup.ps1 because they depend on
+# the link recipe: the default one is CRT-free (see mesa/runtime/mali_cxxrt.cpp
+# and mesa/README.md), because the MSVC ARM64 C/C++ runtime is not installed.
+# Pass -SystemCrt to setup.ps1 to fall back to the normal default libraries.
 # ---------------------------------------------------------------------------
 
 [binaries]
@@ -27,7 +32,7 @@ endian     = 'little'
 needs_exe_wrapper = true
 
 [built-in options]
-c_args   = ['/clang:--target=aarch64-pc-windows-msvc', '/imsvc', '@SDK_UCRT@', '/imsvc', '@SDK_SHARED@', '/imsvc', '@SDK_UM@']
-cpp_args = ['/clang:--target=aarch64-pc-windows-msvc', '/imsvc', '@SDK_UCRT@', '/imsvc', '@SDK_SHARED@', '/imsvc', '@SDK_UM@']
-c_link_args   = ['/clang:--target=aarch64-pc-windows-msvc', '/libpath:@LIB_UM_ARM64@', '/libpath:@LIB_UCRT_ARM64@', '/libpath:@VC_LIB_ARM64@']
-cpp_link_args = ['/clang:--target=aarch64-pc-windows-msvc', '/libpath:@LIB_UM_ARM64@', '/libpath:@LIB_UCRT_ARM64@', '/libpath:@VC_LIB_ARM64@']
+c_args        = [@C_ARGS@]
+cpp_args      = [@CPP_ARGS@]
+c_link_args   = [@C_LINK_ARGS@]
+cpp_link_args = [@CPP_LINK_ARGS@]
