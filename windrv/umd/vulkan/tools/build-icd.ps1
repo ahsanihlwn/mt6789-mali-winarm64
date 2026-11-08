@@ -121,8 +121,25 @@ try {
     Copy-Item -LiteralPath (Join-Path $vulkan 'manifest\mali_g57_icd.json') `
               -Destination (Join-Path $out 'mali_g57_icd.json') -Force
 
+    # Smoke test: links the ICD import library and resolves entry points itself,
+    # so it exercises the ICD directly (no Khronos loader required).
+    $smokeObj = Join-Path $out 'icd_mali_vk_smoke.obj'
+    Write-Host ("CC  {0}" -f 'test\mali_vk_smoke.c')
+    & $clang @common "/Fo$smokeObj" (Join-Path $vulkan 'test\mali_vk_smoke.c')
+    if ($LASTEXITCODE -ne 0) { throw 'compile failed: test\mali_vk_smoke.c' }
+
+    $smoke = Join-Path $out 'mali_vk_smoke.exe'
+    $sll = @(
+        '/nologo','/subsystem:console','/machine:arm64','/entry:mainCRTStartup','/nodefaultlib','/debug',
+        ("/libpath:{0}" -f $t.SdkUmLibArm64),
+        ("/out:{0}" -f $smoke)
+    ) + @($smokeObj) + @((Join-Path $out 'mali_vk_icd.lib'), 'kernel32.lib')
+    & $t.Linker @sll
+    if ($LASTEXITCODE -ne 0) { throw 'link failed: mali_vk_smoke.exe' }
+
     Write-Host ("OK: {0} ({1} bytes)" -f $dll, (Get-Item -LiteralPath $dll).Length) -ForegroundColor Green
     Write-Host ("    manifest: {0}" -f (Join-Path $out 'mali_g57_icd.json'))
+    Write-Host ("    smoke:    {0} ({1} bytes)" -f $smoke, (Get-Item -LiteralPath $smoke).Length)
 }
 catch {
     Write-Host ("ERROR: {0}" -f $_.Exception.Message) -ForegroundColor Red

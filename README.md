@@ -170,7 +170,7 @@ git-ignored `external/`, like the WDK):
 ```powershell
 cd windrv\umd\vulkan
 .\tools\fetch-deps.ps1           # clones external\Vulkan-Headers
-.\tools\build-icd.ps1            # build\mali_vk_icd.dll + mali_g57_icd.json
+.\tools\build-icd.ps1            # build\mali_vk_icd.dll + manifest + smoke test
 ```
 
 Both are ARM64 and CRT-free. To run the ICD, register the manifest from

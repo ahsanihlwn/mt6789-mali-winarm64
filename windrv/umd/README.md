@@ -34,8 +34,9 @@ umd/
     src/icd_queue.c         command buffers, fills, copies, fences, vkQueueSubmit
     src/mali_vk_icd.def     exported loader interface
     manifest/mali_g57_icd.json
+    test/mali_vk_smoke.c    V1–V3 end-to-end smoke test (links the ICD)
     tools/fetch-deps.ps1    clones external\Vulkan-Headers (git-ignored)
-    tools/build-icd.ps1     builds build\mali_vk_icd.dll
+    tools/build-icd.ps1     builds build\mali_vk_icd.dll (+ smoke test)
 ```
 
 Everything builds to `windrv/umd/build/` (git-ignored).
@@ -50,6 +51,24 @@ cd vulkan
 .\tools\fetch-deps.ps1           # needs git + network, once
 .\tools\build-icd.ps1            # needs the fetched headers
 ```
+
+`build-icd.ps1` also emits `build\mali_vk_smoke.exe`, a CRT-free ARM64 test that
+links the ICD's import library and resolves every entry point through
+`vkGetInstanceProcAddr`, so no Vulkan loader is needed to run it. On the target
+it walks V1–V3 from `../GRAPHICS-STACK.md` and prints `RESULT: PASS`:
+
+```
+V1 instance created
+V1 physical device: Mali-G57 MC2 (MT6789) - Jalur A  api 1.0  vendor 0x13B5  device 0x9003
+V1 device + queue created
+V2 buffer object mapped, CPU r/w OK
+V3 GPU vkCmdFillBuffer(0) cleared 1 KiB via a WRITE_VALUE chain
+V3 non-zero fill OK (host fallback)
+RESULT: PASS
+```
+
+(A loader-based run — `vulkaninfo` through the real `vulkan-1.dll` — is a later
+step that also needs an ARM64 build of the Khronos loader.)
 
 Toolchain discovery is shared with the KMD (`kmd\tools\winsdk.ps1`); nothing is
 hard-coded. Both images are ARM64 and CRT-free (clang-cl `/Zl`,
