@@ -10,8 +10,10 @@ whose firmware only ever described it to Android. Display output is explicitly
 driver only ever owns the GPU core itself.
 
 > **Status: early bring-up.** The driver builds, installs, powers the GPU on and
-> executes jobs on real silicon. There is **no Vulkan ICD or D3D client yet**, so
-> Windows does not yet expose the GPU to applications.
+> executes jobs on real silicon. A user-mode layer is under way on top of it: a
+> **UMD winsys** (`windrv/umd`) and a **Vulkan ICD skeleton** that reaches the GPU
+> for memory and job work — but there are **no shaders yet**, so Windows does not
+> yet expose Mali to real applications.
 
 ---
 
@@ -30,25 +32,33 @@ driver only ever owns the GPU core itself.
 | WRITE_VALUE job (GPU writes to memory) | ✅ |
 | Job chains (multiple linked jobs) | ✅ 128-byte descriptor alignment |
 | Interrupt delivery | ⚠️ polling fallback (no ACPI IRQ resource yet) |
-| Vulkan ICD (Mesa PanVK port) | ❌ not started |
-| D3D12 / DXVK / vkd3d-proton path | ❌ depends on the ICD |
+| UMD winsys `windrv/umd` (IOCTL ABI v2 wrapper) | ✅ builds ARM64, CRT-free |
+| Vulkan ICD `windrv/umd/vulkan` | ⚠️ loader interface, instance/device, memory, buffers, fill/fence — no shaders |
+| Vulkan ICD (Mesa PanVK port, render) | ❌ not started |
+| D3D12 / DXVK / vkd3d-proton path | ❌ depends on a shader-capable ICD |
+| OpenGL (Zink) path | ❌ depends on a shader-capable ICD |
 
 ## Architecture
 
 ```
-   D3D12 application
-        │
-        ▼
-   vkd3d-proton  ──►  DXVK  ──►  Vulkan ICD  (Mesa PanVK port, user mode)
-                                     │
-                                     ▼  IOCTL (MaliKmd ABI v2)
-                          ┌──────────────────────────┐
-                          │  MaliKmd.sys (KMDF)      │
-                          │  power / MMU / job / IRQ │
-                          └──────────────────────────┘
-                                     │  MMIO + BO memory
-                                     ▼
-                             Mali-G57 MC2 hardware
+   D3D12 application            D3D11 / OpenGL application
+        │                              │
+   vkd3d-proton ──► DXVK          DXVK / Zink (GL→Vulkan)
+        └──────────┬───────────────────┘
+                   ▼
+        Vulkan ICD  (windrv/umd/vulkan — Jalur A, ours;
+                     Mesa PanVK port — Jalur B, render)
+                   │
+                   ▼  winsys: open / BO / job / fence (windrv/umd)
+                   │
+                   ▼  IOCTL (MaliKmd ABI v2)
+        ┌──────────────────────────┐
+        │  MaliKmd.sys (KMDF)      │
+        │  power / MMU / job / IRQ │
+        └──────────────────────────┘
+                   │  MMIO + BO memory
+                   ▼
+           Mali-G57 MC2 hardware
 ```
 
 The KMD is an **accelerator / hardware broker**, not a display or WDDM driver.
@@ -59,15 +69,28 @@ retargeted to other MediaTek Mali parts.
 Design rule: the ICD builds the job chain in a buffer object and the KMD only
 programs the job-slot registers and rings the doorbell.
 
+The three graphics APIs (DirectX 12, Vulkan, OpenGL) and how they map onto this
+stack are laid out in [`windrv/GRAPHICS-STACK.md`](windrv/GRAPHICS-STACK.md).
+
 ## Repository layout
 
 ```
 windrv/
   ARCHITECTURE.md        design of the KMD, ABI and job model
+  GRAPHICS-STACK.md      Vulkan, OpenGL and DirectX 12 on top of the KMD
   HARDWARE-MT6789.md     register map, power/clock topology, SoC facts
   ROADMAP.md             phases and current validation status
   WDDM-PATH.md           plan for making Windows enumerate Mali as a GPU
   REFERENCES.md          curated external references
+  umd/                   user-mode driver stack (winsys + Vulkan ICD)
+    include/mali_umd.h   winsys API (thin wrapper over the IOCTL ABI)
+    src/mali_umd.c       winsys implementation (CRT-free)
+    src/mali_umd_test.c  round-trip test (open/BO/job)
+    tools/build-umd.ps1  builds the test for ARM64
+    vulkan/              Vulkan ICD (Jalur A from GRAPHICS-STACK.md)
+      src/               loader interface + core objects + queue/submit
+      manifest/          mali_g57_icd.json (Khronos loader manifest)
+      tools/             fetch-deps.ps1, build-icd.ps1
   kmd/
     build.ps1            build + package (+ optional test signing)
     MaliKmd.inf          driver package description
@@ -81,7 +104,9 @@ windrv/
 tools/bridge/            USB-CDC bridge used to drive the tablet remotely
 ```
 
-Everything the build produces goes to `windrv/kmd/build/` and is git-ignored.
+Everything the build produces goes to `windrv/kmd/build/` or `windrv/umd/build/`
+and is git-ignored. Fetched dependencies (e.g. `external/Vulkan-Headers`) land in
+the git-ignored `external/` tree at the repository root.
 
 ## Building
 
@@ -129,6 +154,28 @@ cd windrv\kmd
 
 `malitest.exe` is CRT-free (clang-cl `/Zl`, own entry point, `/nodefaultlib`), so
 no MSVC runtime is needed on the target.
+
+### Build the user-mode stack (winsys + Vulkan ICD)
+
+The UMD winsys needs nothing beyond the same toolchain:
+
+```powershell
+cd windrv\umd
+.\tools\build-umd.ps1            # build\mali_umd_test.exe
+```
+
+The Vulkan ICD additionally needs the Khronos `Vulkan-Headers` (fetched into the
+git-ignored `external/`, like the WDK):
+
+```powershell
+cd windrv\umd\vulkan
+.\tools\fetch-deps.ps1           # clones external\Vulkan-Headers
+.\tools\build-icd.ps1            # build\mali_vk_icd.dll + mali_g57_icd.json
+```
+
+Both are ARM64 and CRT-free. To run the ICD, register the manifest from
+`build\mali_vk_icd.json` (copy it into `%ProgramData%\Vulkan\icd.d\`, or point
+`VK_DRIVER_FILES`/`VK_ICD_FILENAMES` at it).
 
 ### Overrides
 

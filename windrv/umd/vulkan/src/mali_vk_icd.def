@@ -1,0 +1,7 @@
+; Mali-G57 Vulkan ICD - exported loader interface (windrv/umd/vulkan)
+LIBRARY mali_vk_icd
+EXPORTS
+    vk_icdGetInstanceProcAddr
+    vk_icdGetPhysicalDeviceProcAddr
+    vk_icdNegotiateLoaderICDInterfaceVersion
+    vkGetInstanceProcAddr

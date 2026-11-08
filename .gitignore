@@ -12,6 +12,7 @@
 # Build output
 # ---------------------------------------------------------------------------
 /windrv/kmd/build/
+/windrv/umd/build/
 /build/
 *.obj
 *.pdb

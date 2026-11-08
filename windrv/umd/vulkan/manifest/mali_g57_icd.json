@@ -1,0 +1,7 @@
+{
+    "file_format_version": "1.0.0",
+    "ICD": {
+        "library_path": ".\\mali_vk_icd.dll",
+        "api_version": "1.0.0"
+    }
+}

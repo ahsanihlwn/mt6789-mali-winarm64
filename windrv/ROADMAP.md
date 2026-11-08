@@ -163,12 +163,18 @@ usable:
 - Result: power on GPU, allocate GPU memory, map it, run a null job, see IRQs.
 
 **Phase 3 — Vulkan ICD** *(critical path)*
-- Port Mesa `PanVK` (Valhall) to Windows: replace the DRM ioctl backend with our
-  IOCTL backend; build for ARM64.
-- Implement/adjust Win32 WSI (`VK_KHR_win32_surface`) so swapchain present works.
+- [x] **Jalur A — ICD skeleton we own** (`windrv/umd/vulkan`, on the winsys in
+  `windrv/umd`): Khronos loader interface (version 2), instance / physical device
+  / device (opens the KMD, powers on, enables the MMU), `vkAllocateMemory` →
+  buffer object, buffers, and `vkCmdFillBuffer` as a real GPU `WRITE_VALUE` job
+  chain through `vkQueueSubmit` + fences (synchronous). No shaders yet. See
+  [`GRAPHICS-STACK.md`](GRAPHICS-STACK.md) and [`umd/README.md`](umd/README.md).
+- [ ] **Jalur B — render**: port Mesa `PanVK` (Valhall) to Windows: replace the
+  DRM ioctl backend with our IOCTL backend; build for ARM64. This is what gives
+  shaders, pipelines and textures — and therefore what DXVK/vkd3d/Zink need.
+- [ ] Implement/adjust Win32 WSI (`VK_KHR_win32_surface`) so swapchain present works.
 - Result: a clear triangle / Vulkan CTS smoke test on Mali.
-- This, not the KMD, is what makes the GPU visible to applications. It can start
-  in parallel once 2e/2f have skeletons.
+- This, not the KMD, is what makes the GPU visible to applications.
 
 **Phase 4 — D3D translation**
 - Drop in vkd3d-proton (`d3d12.dll`, `d3d12core.dll`) and DXVK (`d3d11.dll`,
@@ -212,6 +218,9 @@ Reused (external, for reference/reuse as allowed):
 
 Written by us:
 - Mali **KMD** for Windows (new).
+- **UMD winsys** (`windrv/umd`, new) — the single caller of the IOCTL ABI.
+- **Jalur A Vulkan ICD** (`windrv/umd/vulkan`, new) — memory/buffer/fill/fence
+  path on the KMD; the measuring stick for Jalur B.
 - **Windows backend** for PanVK (new — the port).
 - WDDM display miniport (new, later).
 
