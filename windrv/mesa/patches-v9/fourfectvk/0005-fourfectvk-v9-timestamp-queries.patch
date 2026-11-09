@@ -1,0 +1,156 @@
+diff -ruN m/src/panfrost/libpan/query_pool.cl b/src/panfrost/libpan/query_pool.cl
+--- m/src/panfrost/libpan/query_pool.cl	2026-10-13 05:39:03.723516729 +0000
++++ b/src/panfrost/libpan/query_pool.cl	2026-10-13 05:38:54.663516729 +0000
+@@ -132,6 +132,10 @@
+          write_occlusion_query_result(dst, 0, flags, report_addr, report_count);
+          break;
+ #if PAN_ARCH == 9
++      case VK_QUERY_TYPE_TIMESTAMP:
++         /* PATCH v9: PANVK_V9_TIMESTAMP, one report per query. */
++         vk_write_query(dst, 0, flags, report_addr[0]);
++         break;
+       case VK_QUERY_TYPE_PIPELINE_STATISTICS:
+          /* PATCH v9: one counter per enabled statistic, in bit order. */
+          for (uint32_t r = 0; r < report_count; r++)
+diff -ruN m/src/panfrost/vulkan/00-panvk-defaults.conf b/src/panfrost/vulkan/00-panvk-defaults.conf
+--- m/src/panfrost/vulkan/00-panvk-defaults.conf	2026-10-13 05:39:03.963516729 +0000
++++ b/src/panfrost/vulkan/00-panvk-defaults.conf	2026-10-13 05:38:55.379516729 +0000
+@@ -27,5 +27,18 @@
+             <option name="pan_disable_clip_cull_distance" value="true" />
+         </application>
+ 
++        <!--
++            Naruto Shippuden: Ultimate Ninja Storm 2 polls D3D11 timestamp
++            queries before its first frame. v9 reports no timestamp support,
++            the queries never become available and the game hangs on a white
++            or black window. Set pan_v9_timestamps=false in the environment
++            to turn it off again.
++        -->
++        <application name="Naruto Shippuden: Ultimate Ninja Storm 2" executable="NSUNS2.exe">
++            <option name="pan_v9_timestamps" value="true" />
++        </application>
++        <application name="Naruto Shippuden: Ultimate Ninja Storm 2, by API name" application_name_match="^NSUNS2[.]exe$">
++            <option name="pan_v9_timestamps" value="true" />
++        </application>
+     </device>
+ </driconf>
+diff -ruN m/src/panfrost/vulkan/jm/panvk_vX_cmd_query.c b/src/panfrost/vulkan/jm/panvk_vX_cmd_query.c
+--- m/src/panfrost/vulkan/jm/panvk_vX_cmd_query.c	2026-10-13 05:39:03.755516729 +0000
++++ b/src/panfrost/vulkan/jm/panvk_vX_cmd_query.c	2026-10-13 05:38:56.539516729 +0000
+@@ -124,6 +124,30 @@
+    UNUSED VK_FROM_HANDLE(panvk_cmd_buffer, cmd, commandBuffer);
+    UNUSED VK_FROM_HANDLE(panvk_query_pool, pool, queryPool);
+ 
++#if PAN_ARCH == 9
++   if (panvk_v9_timestamps(cmd->vk.base.device)) {
++      /* PATCH v9: same ordering as CmdEndQuery. Close the current batch so
++       * the timestamp is taken after the work recorded so far, then write
++       * the GPU system timestamp and mark the query available. */
++      bool end_sync = cmd->cur_batch != NULL;
++
++      if (end_sync)
++         panvk_per_arch(cmd_close_batch)(cmd);
++
++      bool had_batch;
++      struct panvk_batch *batch = open_batch(cmd, &had_batch);
++      had_batch |= end_sync;
++
++      panvk_emit_write_job(cmd, batch, MALI_WRITE_VALUE_TYPE_SYSTEM_TIMESTAMP,
++                           panvk_query_report_dev_addr(pool, query), 0);
++      panvk_emit_write_job(cmd, batch, MALI_WRITE_VALUE_TYPE_IMMEDIATE_32,
++                           panvk_query_available_dev_addr(pool, query), 1);
++
++      close_batch(cmd, had_batch);
++      return;
++   }
++#endif
++
+    panvk_stub();
+ }
+ 
+diff -ruN m/src/panfrost/vulkan/panvk_drirc_gen.py b/src/panfrost/vulkan/panvk_drirc_gen.py
+--- m/src/panfrost/vulkan/panvk_drirc_gen.py	2026-10-13 05:39:03.963516729 +0000
++++ b/src/panfrost/vulkan/panvk_drirc_gen.py	2026-10-13 05:38:57.931516729 +0000
+@@ -42,6 +42,12 @@
+           "Faster where the application writes clip distances; clipping "
+           "planes are then ignored (the Winlator wrapper drops the writes).",
+           c_name="disable_clip_cull_distance"),
++        B("pan_v9_timestamps", False,
++          "v9: write GPU timestamps for timestamp queries although the queue "
++          "reports timestampValidBits = 0. For D3D11 games through DXVK "
++          "that poll timestamp queries and hang while they never become "
++          "available.",
++          c_name="v9_timestamps"),
+     ]
+ 
+     debug_options = []
+diff -ruN m/src/panfrost/vulkan/panvk_query_pool.h b/src/panfrost/vulkan/panvk_query_pool.h
+--- m/src/panfrost/vulkan/panvk_query_pool.h	2026-10-13 05:39:03.687516729 +0000
++++ b/src/panfrost/vulkan/panvk_query_pool.h	2026-10-13 05:38:59.083516729 +0000
+@@ -19,6 +19,25 @@
+ #include "panvk_cmd_buffer.h"
+ #endif
+ 
++#if PAN_ARCH == 9
++#include "panvk_instance.h"
++
++/* PATCH v9: timestamp queries, PANVK_V9_TIMESTAMP=1 or the driconf option
++ * pan_v9_timestamps (default off, on for Naruto Shippuden Storm 2). The
++ * queue reports timestampValidBits = 0, so this only matters for
++ * applications that write timestamps anyway, such as D3D11 games through
++ * DXVK: without it they poll a query that never becomes available. */
++static inline bool
++panvk_v9_timestamps(const struct vk_device *dev)
++{
++   const struct panvk_instance *instance =
++      to_panvk_instance(dev->physical->instance);
++
++   return pan_env_flag("PANVK_V9_TIMESTAMP") != NULL ||
++          instance->drirc.misc.v9_timestamps;
++}
++#endif
++
+ struct panvk_query_report {
+    uint64_t value;
+ };
+diff -ruN m/src/panfrost/vulkan/panvk_vX_query_pool.c b/src/panfrost/vulkan/panvk_vX_query_pool.c
+--- m/src/panfrost/vulkan/panvk_vX_query_pool.c	2026-10-13 05:39:03.775516729 +0000
++++ b/src/panfrost/vulkan/panvk_vX_query_pool.c	2026-10-13 05:39:01.135516729 +0000
+@@ -81,6 +81,24 @@
+       break;
+    }
+ #endif
++#if PAN_ARCH == 9
++   case VK_QUERY_TYPE_TIMESTAMP: {
++      /* PATCH v9: one GPU system timestamp per query, written by
++       * CmdWriteTimestamp2. */
++      if (panvk_v9_timestamps(&device->vk)) {
++         reports_per_query = 1;
++         break;
++      }
++      static bool warned;
++      if (!warned) {
++         warned = true;
++         mesa_logw("panvk: timestamp query pool created but timestamps are "
++                   "not supported (PANVK_V9_TIMESTAMP=1 or pan_v9_timestamps=true "
++                   "enables them)");
++      }
++      FALLTHROUGH;
++   }
++#endif
+    default:
+       UNREACHABLE("Unsupported query type");
+    }
+@@ -295,6 +313,12 @@
+          }
+ #endif
+ #if PAN_ARCH == 9
++         case VK_QUERY_TYPE_TIMESTAMP: {
++            /* PATCH v9: PANVK_V9_TIMESTAMP, one report per query. */
++            if (write_results)
++               cpu_write_query_result(dst, 0, flags, src[0].value);
++            break;
++         }
+          case VK_QUERY_TYPE_PIPELINE_STATISTICS: {
+             if (write_results) {
+                const uint32_t n =

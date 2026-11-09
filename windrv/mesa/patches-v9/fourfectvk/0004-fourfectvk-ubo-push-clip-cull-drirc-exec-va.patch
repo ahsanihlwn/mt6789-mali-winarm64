@@ -1,0 +1,818 @@
+diff -ruN a/src/panfrost/lib/kmod/kbase_kmod.c m/src/panfrost/lib/kmod/kbase_kmod.c
+--- a/src/panfrost/lib/kmod/kbase_kmod.c	2026-10-13 05:39:02.991516729 +0000
++++ m/src/panfrost/lib/kmod/kbase_kmod.c	2026-10-13 05:39:03.607516729 +0000
+@@ -1197,8 +1197,28 @@
+    /* PATCH: EXEC_INIT dipindah SEBELUM JIT_INIT -- di device ini EXEC_INIT
+     * gagal EPERM kalau ada operasi memori (termasuk JIT_INIT) yang jalan
+     * duluan. */
+-   struct kbase_ioctl_mem_exec_init exec_init = { .va_pages = 1024 };
++   /* The EXEC_VA zone holds all shader code. 1024 pages (4 MiB) ran out with
++    * DXVK 2.x and graphics pipeline libraries (Tomb Raider menu: hundreds of
++    * failed MEM_ALLOC calls, pipelines missing). It only reserves GPU virtual
++    * addresses, taken from the top of the SAME_VA zone; the kernel allows up
++    * to 4 GiB (KBASE_REG_ZONE_EXEC_VA_MAX_PAGES). Ask for 256 MiB, and fall
++    * back to the old size if the kernel refuses.
++    * PANVK_KBASE_EXEC_VA_MB=<n> overrides the size (A/B control). */
++   uint64_t exec_mb = 256;
++   const char *exec_env = getenv("PANVK_KBASE_EXEC_VA_MB");
++   if (exec_env && atoi(exec_env) > 0)
++      exec_mb = MIN2((uint64_t)atoi(exec_env), 4096);
++   struct kbase_ioctl_mem_exec_init exec_init = {
++      .va_pages = (exec_mb << 20) / 4096,
++   };
++   bool exec_retry = false;
+    if (ioctl(fd, KBASE_IOCTL_MEM_EXEC_INIT, &exec_init)) {
++      mesa_logw("kbase: KBASE_IOCTL_MEM_EXEC_INIT (%" PRIu64 " MiB) failed: "
++                "%s, retrying with 4 MiB", exec_mb, strerror(errno));
++      exec_init.va_pages = 1024;
++      exec_retry = true;
++   }
++   if (exec_retry && ioctl(fd, KBASE_IOCTL_MEM_EXEC_INIT, &exec_init)) {
+       mesa_logw("kbase: KBASE_IOCTL_MEM_EXEC_INIT failed: %s "
+                 "(executable BO allocation will not work)", strerror(errno));
+    }
+@@ -1906,7 +1926,11 @@
+       if (pan_v9_trace_enabled())
+          mesa_logi("kbase: MEM_ALLOC req: va_pages=%llu commit_pages=%llu extension=%llu flags=0x%llx kmod_flags=0x%x", (unsigned long long)va_pages, (unsigned long long)commit_pages, (unsigned long long)extension, (unsigned long long)alloc_flags, kmod_flags);
+       if (ioctl(dev->fd, KBASE_IOCTL_MEM_ALLOC, &req)) {
+-         mesa_loge("kbase: KBASE_IOCTL_MEM_ALLOC failed: %s", strerror(errno));
++         mesa_loge("kbase: KBASE_IOCTL_MEM_ALLOC failed: %s (%llu pages, "
++                   "flags 0x%llx%s)", strerror(errno),
++                   (unsigned long long)va_pages,
++                   (unsigned long long)alloc_flags,
++                   (alloc_flags & BASE_MEM_PROT_GPU_EX) ? ", executable" : "");
+          goto err_free_bo;
+       }
+ 
+diff -ruN a/src/panfrost/libpan/libpan_copy.cl m/src/panfrost/libpan/libpan_copy.cl
+--- a/src/panfrost/libpan/libpan_copy.cl	2026-10-13 05:38:54.051516729 +0000
++++ m/src/panfrost/libpan/libpan_copy.cl	2026-10-13 05:39:03.583516729 +0000
+@@ -4,6 +4,7 @@
+  * SPDX-License-Identifier: MIT
+  */
+ #include "compiler/libcl/libcl.h"
++#include "genxml/gen_macros.h"
+ #include "libpan_copy.h"
+ 
+ #if PAN_ARCH >= 6
+@@ -85,4 +86,40 @@
+    panlib_copy_mem_body(dst, src, size);
+ }
+ #endif
++
++#if PAN_ARCH == 9
++/* PANVK_UBO_PUSH: each thread strides over the entries of the batch. A
++ * descriptor entry reads the BUFFER descriptor now, so descriptor updates
++ * made before the submit are seen; out-of-range and null reads give 0. */
++KERNEL(PANLIB_UBO_GATHER_WG_SIZE)
++panlib_ubo_gather(constant struct panlib_ubo_gather *g)
++{
++   const uint32_t n = g->count;
++   global const struct panlib_ubo_word *w =
++      (global const struct panlib_ubo_word *)g->words;
++   const uint32_t nthreads = cl_num_groups.x * PANLIB_UBO_GATHER_WG_SIZE;
++
++   for (uint32_t i = cl_global_id.x; i < n; i += nthreads) {
++      uint64_t src = w[i].src;
++      uint32_t value = 0;
++
++      if (src && (w[i].flags & PANLIB_UBO_WORD_FROM_DESC)) {
++         global const uint32_t *d = (global const uint32_t *)src;
++         const uint32_t type = d[0] & 0xf;
++         const uint32_t size = d[1];
++         const uint64_t addr = upsample(d[3], d[2]);
++
++         src = (type == MALI_DESCRIPTOR_TYPE_BUFFER && addr &&
++                (uint64_t)w[i].offset + 4 <= size)
++                  ? addr + w[i].offset
++                  : 0;
++      }
++
++      if (src)
++         value = *(global const uint32_t *)src;
++
++      *(global uint32_t *)w[i].dst = value;
++   }
++}
++#endif
+ #endif
+diff -ruN a/src/panfrost/libpan/libpan_copy.h m/src/panfrost/libpan/libpan_copy.h
+--- a/src/panfrost/libpan/libpan_copy.h	2026-10-13 05:38:54.247516729 +0000
++++ m/src/panfrost/libpan/libpan_copy.h	2026-10-13 05:39:03.563516729 +0000
+@@ -7,3 +7,28 @@
+ 
+ #define PANLIB_COPY_MEM_WG_SIZE    64
+ #define PANLIB_COPY_MEM_CHUNK_SIZE 16
++
++/* PANVK_UBO_PUSH (v9): UBO words that draws read from their FAU buffer are
++ * copied there by panlib_ubo_gather, at the start of the batch, when the GPU
++ * runs it. One entry per 32-bit word. */
++#define PANLIB_UBO_GATHER_WG_SIZE 64
++#define PANLIB_UBO_GATHER_WG_COUNT 4
++
++/* src is the address of a BUFFER descriptor; offset is applied to the
++ * buffer it describes, with a bounds check. Otherwise src is the address of
++ * the word itself (0: write 0). */
++#define PANLIB_UBO_WORD_FROM_DESC 1
++
++struct panlib_ubo_word {
++   uint64_t src;
++   uint64_t dst;
++   uint32_t offset;
++   uint32_t flags;
++};
++
++/* Filled when the batch is closed, after the job was queued. */
++struct panlib_ubo_gather {
++   uint64_t words; /* struct panlib_ubo_word[count] */
++   uint32_t count;
++   uint32_t pad;
++};
+diff -ruN a/src/panfrost/vulkan/00-panvk-defaults.conf m/src/panfrost/vulkan/00-panvk-defaults.conf
+--- a/src/panfrost/vulkan/00-panvk-defaults.conf	2026-10-13 05:38:55.327516729 +0000
++++ m/src/panfrost/vulkan/00-panvk-defaults.conf	2026-10-13 05:39:03.963516729 +0000
+@@ -10,5 +10,22 @@
+                -->
+             <option name="pan_enable_vertex_pipeline_stores_atomics" value="true" />
+         </engine>
++
++        <!--
++            Tomb Raider (2013) writes one clip distance in most vertex shaders.
++            On v9 they are emulated with a fragment-shader discard, which turns
++            off forward pixel kill and early depth for those draws: the menu
++            runs at about half the frame rate. The Arm driver doesn't support
++            clip distances at all, and through the Winlator wrapper the game
++            runs without them. Set pan_disable_clip_cull_distance=false in the
++            environment to keep them.
++        -->
++        <application name="Tomb Raider (2013)" executable="TombRaider.exe">
++            <option name="pan_disable_clip_cull_distance" value="true" />
++        </application>
++        <application name="Tomb Raider (2013), by API name" application_name_match="^TombRaider[.]exe$">
++            <option name="pan_disable_clip_cull_distance" value="true" />
++        </application>
++
+     </device>
+ </driconf>
+diff -ruN a/src/panfrost/vulkan/jm/panvk_cmd_buffer.h m/src/panfrost/vulkan/jm/panvk_cmd_buffer.h
+--- a/src/panfrost/vulkan/jm/panvk_cmd_buffer.h	2026-10-13 05:39:03.331516729 +0000
++++ m/src/panfrost/vulkan/jm/panvk_cmd_buffer.h	2026-10-13 05:39:03.419516729 +0000
+@@ -64,6 +64,16 @@
+    uint64_t kbase_seqno;
+    /* PANVK_FRAME_PROF_PASSES: what this batch renders (set at close). */
+    struct panvk_frame_prof_pass prof;
++#if PAN_ARCH == 9
++   /* PANVK_UBO_PUSH: the panlib_ubo_gather job of this batch (queued before
++    * the first draw that pushes UBO words) and its entries
++    * (struct panlib_ubo_word), uploaded when the batch is closed. */
++   struct {
++      struct util_dynarray words;
++      void *hdr;
++      unsigned job_index;
++   } ubo_gather;
++#endif
+ };
+ 
+ enum panvk_cmd_event_op_type {
+diff -ruN a/src/panfrost/vulkan/jm/panvk_vX_cmd_buffer.c m/src/panfrost/vulkan/jm/panvk_vX_cmd_buffer.c
+--- a/src/panfrost/vulkan/jm/panvk_vX_cmd_buffer.c	2026-10-13 05:39:03.331516729 +0000
++++ m/src/panfrost/vulkan/jm/panvk_vX_cmd_buffer.c	2026-10-13 05:39:03.415516729 +0000
+@@ -14,6 +14,9 @@
+ #include "panvk_buffer.h"
+ #include "panvk_cmd_alloc.h"
+ #include "panvk_cmd_buffer.h"
++#if PAN_ARCH == 9
++#include "libpan_copy.h"
++#endif
+ #include "panvk_cmd_desc_state.h"
+ #include "panvk_cmd_draw.h"
+ #include "panvk_cmd_frame_shaders.h"
+@@ -101,6 +104,32 @@
+    return v;
+ }
+ 
++#if PAN_ARCH == 9
++/* PANVK_UBO_PUSH: hand the entries recorded for this batch to its
++ * panlib_ubo_gather job (see panvk_vX_cmd_push_constant.c). */
++static void
++panvk_ubo_gather_close(struct panvk_cmd_buffer *cmdbuf,
++                       struct panvk_batch *batch)
++{
++   struct panlib_ubo_gather *hdr = batch->ubo_gather.hdr;
++   const unsigned n = util_dynarray_num_elements(&batch->ubo_gather.words,
++                                                 struct panlib_ubo_word);
++
++   if (hdr && n) {
++      struct pan_ptr mem = panvk_cmd_alloc_dev_mem(
++         cmdbuf, desc, n * sizeof(struct panlib_ubo_word), 16);
++
++      if (mem.gpu) {
++         memcpy(mem.cpu, batch->ubo_gather.words.data,
++                n * sizeof(struct panlib_ubo_word));
++         hdr->words = mem.gpu;
++         hdr->count = n;
++      }
++   }
++   util_dynarray_fini(&batch->ubo_gather.words);
++}
++#endif
++
+ void
+ panvk_per_arch(cmd_close_batch)(struct panvk_cmd_buffer *cmdbuf)
+ {
+@@ -111,6 +140,10 @@
+ 
+    assert(batch);
+ 
++#if PAN_ARCH == 9
++   panvk_ubo_gather_close(cmdbuf, batch);
++#endif
++
+    if (!batch->fb.desc.gpu && !batch->vtc_jc.first_job) {
+       if (util_dynarray_num_elements(&batch->event_ops,
+                                      struct panvk_cmd_event_op) == 0) {
+@@ -472,6 +505,9 @@
+    cmdbuf->cur_batch->jobs = UTIL_DYNARRAY_INIT;
+    cmdbuf->cur_batch->event_ops = UTIL_DYNARRAY_INIT;
+    assert(cmdbuf->cur_batch);
++#if PAN_ARCH == 9
++   cmdbuf->cur_batch->ubo_gather.words = UTIL_DYNARRAY_INIT;
++#endif
+ #if PAN_ARCH >= 9
+    /* See pan_jc::no_tiler_chain. */
+    static int no_tiler_chain = -1;
+@@ -525,6 +561,9 @@
+       list_del(&batch->node);
+       util_dynarray_fini(&batch->jobs);
+       util_dynarray_fini(&batch->event_ops);
++#if PAN_ARCH == 9
++      util_dynarray_fini(&batch->ubo_gather.words);
++#endif
+ 
+       vk_free(&cmdbuf->vk.pool->alloc, batch);
+    }
+@@ -548,6 +587,9 @@
+       list_del(&batch->node);
+       util_dynarray_fini(&batch->jobs);
+       util_dynarray_fini(&batch->event_ops);
++#if PAN_ARCH == 9
++      util_dynarray_fini(&batch->ubo_gather.words);
++#endif
+ 
+       vk_free(&cmdbuf->vk.pool->alloc, batch);
+    }
+diff -ruN a/src/panfrost/vulkan/jm/panvk_vX_cmd_draw.c m/src/panfrost/vulkan/jm/panvk_vX_cmd_draw.c
+--- a/src/panfrost/vulkan/jm/panvk_vX_cmd_draw.c	2026-10-13 05:39:03.075516729 +0000
++++ m/src/panfrost/vulkan/jm/panvk_vX_cmd_draw.c	2026-10-13 05:39:03.419516729 +0000
+@@ -4824,7 +4824,8 @@
+    if (chain_reverse) {
+       const unsigned predicted_helper_index = batch->vtc_jc.job_index + 2;
+ 
+-      pan_jc_add_job(&batch->vtc_jc, MALI_JOB_TYPE_NOT_STARTED, false, false, 0,
++      pan_jc_add_job(&batch->vtc_jc, MALI_JOB_TYPE_NOT_STARTED,
++                     batch->ubo_gather.hdr != NULL, false, 0,
+                      predicted_helper_index, &draw->jobs.idvs, false);
+ 
+       struct panvk_precomp_ctx precomp_ctx = panvk_per_arch(precomp_cs)(cmdbuf);
+@@ -4912,10 +4913,17 @@
+    const bool track_parked = is_indirect && !indirect_untracked;
+    const unsigned prev_tiler_dep = batch->vtc_jc.tiler_dep;
+ 
++   /* PANVK_UBO_PUSH: the draw reads FAU words that the batch's gather job
++    * writes. Dependency 1 is free on direct draws; otherwise use a barrier. */
++   const unsigned ubo_dep = batch->ubo_gather.hdr ? batch->ubo_gather.job_index
++                                                  : 0;
++   const unsigned local_dep = track_parked ? prev_tiler_dep : ubo_dep;
++   const bool ubo_barrier = ubo_dep && local_dep != ubo_dep;
++
+    pan_jc_add_job(&batch->vtc_jc,
+                   is_indirect ? MALI_JOB_TYPE_NOT_STARTED
+                               : MALI_JOB_TYPE_MALLOC_VERTEX,
+-                  false, false, track_parked ? prev_tiler_dep : 0,
++                  ubo_barrier, false, local_dep,
+                   indirect_dep, &draw->jobs.idvs, false);
+ 
+    if (track_parked) {
+diff -ruN a/src/panfrost/vulkan/panvk_drirc_gen.py m/src/panfrost/vulkan/panvk_drirc_gen.py
+--- a/src/panfrost/vulkan/panvk_drirc_gen.py	2026-10-13 05:38:57.859516729 +0000
++++ m/src/panfrost/vulkan/panvk_drirc_gen.py	2026-10-13 05:39:03.963516729 +0000
+@@ -36,6 +36,12 @@
+           "Enable fragmentStoresAndAtomics and vertexPipelineStoresAndAtomics on any "
+           "architecture. (This may not work reliably and is for debug purposes only!)",
+           c_name="force_enable_shader_atomics"),
++        B("pan_disable_clip_cull_distance", False,
++          "v9: don't report shaderClipDistance/shaderCullDistance, so the "
++          "fragment-shader emulation of clip and cull distances doesn't run. "
++          "Faster where the application writes clip distances; clipping "
++          "planes are then ignored (the Winlator wrapper drops the writes).",
++          c_name="disable_clip_cull_distance"),
+     ]
+ 
+     debug_options = []
+diff -ruN a/src/panfrost/vulkan/panvk_instance.h m/src/panfrost/vulkan/panvk_instance.h
+--- a/src/panfrost/vulkan/panvk_instance.h	2026-10-13 05:38:58.263516729 +0000
++++ m/src/panfrost/vulkan/panvk_instance.h	2026-10-13 05:39:03.467516729 +0000
+@@ -10,6 +10,7 @@
+ 
+ #include "vk_instance.h"
+ #include "panvk_drirc.h"
++#include "panfrost/lib/pan_env.h"
+ 
+ #include "lib/kmod/pan_kmod.h"
+ 
+@@ -70,4 +71,15 @@
+    return container_of(instance, struct panvk_instance, vk);
+ }
+ 
++/* PATCH v9: clip/cull distances off (feature not reported, no emulation in
++ * the shaders): PANVK_V9_NO_CLIP_CULL=1, or the driconf option
++ * pan_disable_clip_cull_distance (on for some games, 00-panvk-defaults.conf;
++ * pan_disable_clip_cull_distance=false in the environment keeps them). */
++static inline bool
++panvk_clip_cull_disabled(const struct panvk_instance *instance)
++{
++   return pan_env_flag("PANVK_V9_NO_CLIP_CULL") != NULL ||
++          (instance && instance->drirc.misc.disable_clip_cull_distance);
++}
++
+ #endif
+diff -ruN a/src/panfrost/vulkan/panvk_shader.h m/src/panfrost/vulkan/panvk_shader.h
+--- a/src/panfrost/vulkan/panvk_shader.h	2026-10-13 05:39:03.139516729 +0000
++++ m/src/panfrost/vulkan/panvk_shader.h	2026-10-13 05:39:03.443516729 +0000
+@@ -390,11 +390,30 @@
+ #define MAX_SYSVAL_FAUS     MAX2(MAX_COMPUTE_SYSVAL_FAUS, MAX_GFX_SYSVAL_FAUS)
+ #define MAX_PUSH_CONST_FAUS (MAX_PUSH_CONSTANTS_SIZE / FAU_WORD_SIZE)
+ 
++/* PANVK_UBO_PUSH (v9, experiment, off by default): one 32-bit UBO word
++ * that the shader reads from the FAU instead of the UBO. */
++struct panvk_ubo_push_word {
++   /* 1: dynamic buffer `idx` of set `set`; 0: descriptor `idx` of set
++    * `set` (a BUFFER descriptor). */
++   uint8_t dyn;
++   uint8_t set;
++   uint16_t idx;
++   /* Byte offset in the buffer. */
++   uint32_t offset;
++};
++
++#define PANVK_MAX_UBO_PUSH_WORDS 64
++
+ struct panvk_shader_fau_info {
+    BITSET_DECLARE(used_sysvals, MAX_SYSVAL_FAUS);
+    BITSET_DECLARE(used_push_consts, MAX_PUSH_CONST_FAUS);
+    uint32_t sysval_count;
+    uint32_t total_count;
++   /* PANVK_UBO_PUSH: the pushed UBO words start at FAU index
++    * ubo_push_start (64-bit units), two words per FAU. */
++   uint32_t ubo_push_start;
++   uint32_t ubo_push_count;
++   struct panvk_ubo_push_word ubo_push[PANVK_MAX_UBO_PUSH_WORDS];
+ };
+ 
+ struct panvk_shader_desc_info {
+@@ -418,6 +437,8 @@
+       uint32_t map[MAX_DYNAMIC_BUFFERS];
+       uint32_t count;
+    } dyn_bufs;
++   /* Index of the first dynamic buffer in the driver set (table 0). */
++   uint32_t dyn_bufs_start;
+    uint32_t fs_varying_attr_desc_count;
+ #endif
+ };
+diff -ruN a/src/panfrost/vulkan/panvk_vX_cmd_push_constant.c m/src/panfrost/vulkan/panvk_vX_cmd_push_constant.c
+--- a/src/panfrost/vulkan/panvk_vX_cmd_push_constant.c	2026-10-13 05:39:00.167516729 +0000
++++ m/src/panfrost/vulkan/panvk_vX_cmd_push_constant.c	2026-10-13 05:39:03.519516729 +0000
+@@ -7,11 +7,77 @@
+ #include "panvk_cmd_buffer.h"
+ #include "panvk_entrypoints.h"
+ 
++#if PAN_ARCH == 9
++#include "libpan.h"
++#include "libpan_copy.h"
++#include "panvk_cmd_precomp.h"
++#include "panvk_descriptor_set.h"
++
++/* PANVK_UBO_PUSH: where the GPU finds one pushed word. Dynamic buffers are
++ * resolved now (their offsets are fixed when the draw is recorded); other
++ * UBOs through their descriptor in the set, read by the gather kernel when
++ * the batch runs. Unbound or out-of-range words give 0. */
++static void
++panvk_ubo_push_src(const struct panvk_descriptor_state *desc_state,
++                   const struct panvk_ubo_push_word *w,
++                   struct panlib_ubo_word *e)
++{
++   const struct panvk_descriptor_set *set =
++      w->set < MAX_SETS ? desc_state->sets[w->set] : NULL;
++
++   e->src = 0;
++   e->offset = w->offset;
++   e->flags = 0;
++
++   if (!set)
++      return;
++
++   if (w->dyn) {
++      if (w->idx >= MAX_DYNAMIC_BUFFERS || !set->dyn_bufs[w->idx].dev_addr ||
++          (uint64_t)w->offset + 4 > set->dyn_bufs[w->idx].size)
++         return;
++      e->src = set->dyn_bufs[w->idx].dev_addr +
++               desc_state->dyn_buf_offsets[w->set][w->idx] + w->offset;
++   } else if (w->idx < set->desc_count && set->descs.dev) {
++      e->src = set->descs.dev + (uint64_t)w->idx * PANVK_DESCRIPTOR_SIZE;
++      e->flags = PANLIB_UBO_WORD_FROM_DESC;
++   }
++}
++
++/* The batch's gather job, queued the first time a draw of the batch pushes
++ * UBO words. Its entry list is uploaded in cmd_close_batch(). Returns false
++ * on allocation failure. */
++static bool
++panvk_ubo_gather_job(struct panvk_cmd_buffer *cmdbuf)
++{
++   struct panvk_batch *batch = cmdbuf->cur_batch;
++
++   if (!batch)
++      return false;
++   if (batch->ubo_gather.hdr)
++      return true;
++
++   struct pan_ptr hdr = panvk_cmd_alloc_dev_mem(
++      cmdbuf, desc, sizeof(struct panlib_ubo_gather), 16);
++   if (!hdr.gpu)
++      return false;
++   memset(hdr.cpu, 0, sizeof(struct panlib_ubo_gather));
++
++   struct panvk_precomp_ctx ctx = panvk_per_arch(precomp_cs)(cmdbuf);
++   panlib_ubo_gather(&ctx, panlib_1d(PANLIB_UBO_GATHER_WG_COUNT),
++                     PANLIB_BARRIER_NONE, hdr.gpu);
++   batch->ubo_gather.hdr = hdr.cpu;
++   batch->ubo_gather.job_index = batch->vtc_jc.job_index;
++   return true;
++}
++#endif
++
+ static VkResult
+ prepare_push_uniforms(struct panvk_cmd_buffer *cmdbuf,
+                       const struct panvk_shader_variant *shader,
+                       struct pan_ptr *push_uniforms, uint32_t repeat_count,
+-                      uint64_t *sysvals)
++                      uint64_t *sysvals,
++                      const struct panvk_descriptor_state *desc_state)
+ {
+    struct panvk_device *dev = to_panvk_device(cmdbuf->vk.base.device);
+ 
+@@ -73,6 +139,33 @@
+             (repeat_faus[idx] & ((uint64_t)UINT32_MAX << (32 * !hi))) |
+             ((uint64_t)fau->words[i].constant << (32 * hi));
+       }
++
++#if PAN_ARCH == 9
++      if (shader->fau.ubo_push_count && desc_state) {
++         struct panvk_batch *batch = cmdbuf->cur_batch;
++         uint32_t *words =
++            (uint32_t *)&repeat_faus[shader->fau.ubo_push_start];
++         const uint64_t words_gpu =
++            common_inner.push_uniforms +
++            shader->fau.ubo_push_start * sizeof(uint64_t);
++
++         assert(shader->fau.ubo_push_start +
++                   DIV_ROUND_UP(shader->fau.ubo_push_count, 2) <=
++                shader->fau.total_count);
++
++         if (!panvk_ubo_gather_job(cmdbuf))
++            return VK_ERROR_OUT_OF_DEVICE_MEMORY;
++
++         for (uint32_t i = 0; i < shader->fau.ubo_push_count; i++) {
++            struct panlib_ubo_word e;
++
++            panvk_ubo_push_src(desc_state, &shader->fau.ubo_push[i], &e);
++            e.dst = words_gpu + i * sizeof(uint32_t);
++            words[i] = 0;
++            util_dynarray_append(&batch->ubo_gather.words, e);
++         }
++      }
++#endif
+    }
+ 
+    return VK_SUCCESS;
+@@ -84,7 +177,8 @@
+    struct pan_ptr *push_uniforms, uint32_t repeat_count)
+ {
+    return prepare_push_uniforms(cmdbuf, shader, push_uniforms, repeat_count,
+-                                (uint64_t *)&cmdbuf->state.gfx.sysvals);
++                                (uint64_t *)&cmdbuf->state.gfx.sysvals,
++                                &cmdbuf->state.gfx.desc_state);
+ }
+ 
+ VkResult
+@@ -93,7 +187,8 @@
+    struct pan_ptr *push_uniforms)
+ {
+    return prepare_push_uniforms(cmdbuf, shader, push_uniforms, 1,
+-                                (uint64_t *)&cmdbuf->state.compute.sysvals);
++                                (uint64_t *)&cmdbuf->state.compute.sysvals,
++                                &cmdbuf->state.compute.desc_state);
+ }
+ 
+ VKAPI_ATTR void VKAPI_CALL
+diff -ruN a/src/panfrost/vulkan/panvk_vX_nir_lower_descriptors.c m/src/panfrost/vulkan/panvk_vX_nir_lower_descriptors.c
+--- a/src/panfrost/vulkan/panvk_vX_nir_lower_descriptors.c	2026-10-13 05:39:00.735516729 +0000
++++ m/src/panfrost/vulkan/panvk_vX_nir_lower_descriptors.c	2026-10-13 05:39:03.491516729 +0000
+@@ -1395,6 +1395,7 @@
+    desc_info->dyn_bufs.count = lower_info->dyn_bufs.count;
+    memcpy(desc_info->dyn_bufs.map, lower_info->dyn_bufs.map,
+           lower_info->dyn_bufs.count * sizeof(*desc_info->dyn_bufs.map));
++   desc_info->dyn_bufs_start = lower_info->dyn_bufs_start;
+ #endif
+ 
+    desc_info->used_set_mask = lower_info->used_set_mask;
+diff -ruN a/src/panfrost/vulkan/panvk_vX_physical_device.c m/src/panfrost/vulkan/panvk_vX_physical_device.c
+--- a/src/panfrost/vulkan/panvk_vX_physical_device.c	2026-10-13 05:39:03.175516729 +0000
++++ m/src/panfrost/vulkan/panvk_vX_physical_device.c	2026-10-13 05:39:03.507516729 +0000
+@@ -383,8 +383,8 @@
+       .shaderStorageBufferArrayDynamicIndexing = true,
+       .shaderStorageImageArrayDynamicIndexing = true,
+       /* PATCH v9: emulated in the fragment shader (panvk_v9_lower_fs_clip_cull). */
+-      .shaderClipDistance = PAN_ARCH == 9 && !pan_env_flag("PANVK_V9_NO_CLIP_CULL"),
+-      .shaderCullDistance = PAN_ARCH == 9 && !pan_env_flag("PANVK_V9_NO_CLIP_CULL"),
++      .shaderClipDistance = PAN_ARCH == 9 && !panvk_clip_cull_disabled(instance),
++      .shaderCullDistance = PAN_ARCH == 9 && !panvk_clip_cull_disabled(instance),
+       .shaderFloat64 = false,
+       .shaderInt64 = true,
+       .shaderInt16 = true,
+diff -ruN a/src/panfrost/vulkan/panvk_vX_shader.c m/src/panfrost/vulkan/panvk_vX_shader.c
+--- a/src/panfrost/vulkan/panvk_vX_shader.c	2026-10-13 05:39:03.179516729 +0000
++++ m/src/panfrost/vulkan/panvk_vX_shader.c	2026-10-13 05:39:03.391516729 +0000
+@@ -937,6 +937,10 @@
+    pan_preprocess_nir(nir, pdev->kmod.dev->props.gpu_id);
+ }
+ 
++#if PAN_ARCH == 9
++static unsigned panvk_ubo_push_budget(void);
++#endif
++
+ static void
+ panvk_hash_state(struct vk_physical_device *device,
+                  const struct vk_graphics_pipeline_state *state,
+@@ -974,6 +978,19 @@
+       const bool emu = panvk_v9_sampler_emulation_active(vkdev);
+       _mesa_blake3_update(&blake3_ctx, &emu, sizeof(emu));
+    }
++
++   /* PANVK_UBO_PUSH changes the compiled code. Hashed only when it is on,
++    * so the keys of the default configuration stay the same. */
++   const unsigned ubo_push = panvk_ubo_push_budget();
++   if (ubo_push)
++      _mesa_blake3_update(&blake3_ctx, &ubo_push, sizeof(ubo_push));
++
++   /* Clip/cull distances off changes the fragment shaders too. Hashed only
++    * when off, like above. */
++   const bool clip_cull_off =
++      panvk_clip_cull_disabled(to_panvk_instance(device->instance));
++   if (clip_cull_off)
++      _mesa_blake3_update(&blake3_ctx, &clip_cull_off, sizeof(clip_cull_off));
+ #endif
+ 
+    _mesa_blake3_final(&blake3_ctx, blake3_out);
+@@ -1519,11 +1536,18 @@
+    return true;
+ }
+ 
++static bool
++panvk_dev_clip_cull_off(const struct panvk_device *dev)
++{
++   return panvk_clip_cull_disabled(
++      to_panvk_instance(dev->vk.physical->instance));
++}
++
+ static void
+ panvk_v9_lower_cull_mask(nir_shader *nir, unsigned clip_size,
+-                         unsigned cull_size)
++                         unsigned cull_size, bool clip_cull_off)
+ {
+-   if (!cull_size || pan_env_flag("PANVK_V9_NO_CLIP_CULL"))
++   if (!cull_size || clip_cull_off)
+       return;
+ 
+    struct panvk_v9_cull_ctx ctx = {
+@@ -1560,12 +1584,14 @@
+  * separately compiled fragment shaders work too. When the vertex layout is
+  * known (linked pipeline), only the slots it writes are read and nothing
+  * is added if it has none. Runs on variables, before IO lowering. Returns
+- * whether code was added. PANVK_V9_NO_CLIP_CULL=1 disables (control). */
++ * whether code was added. Off with panvk_clip_cull_disabled()
++ * (PANVK_V9_NO_CLIP_CULL=1 or driconf pan_disable_clip_cull_distance). */
+ static bool
+ panvk_v9_lower_fs_clip_cull(nir_shader *nir,
+-                            const struct pan_varying_layout *vs_layout)
++                            const struct pan_varying_layout *vs_layout,
++                            bool clip_cull_off)
+ {
+-   if (pan_env_flag("PANVK_V9_NO_CLIP_CULL"))
++   if (clip_cull_off)
+       return false;
+ 
+    unsigned clip_slots = 2, cull_slots = 2;
+@@ -2056,6 +2082,152 @@
+    pan_nir_lower_mediump_io(nir);
+ }
+ 
++#if PAN_ARCH == 9
++/* PANVK_UBO_PUSH=<words> (v9 experiment, off by default; 1 means 32 words):
++ * constant-offset 32-bit UBO loads read from the FAU instead of the UBO.
++ * The words are copied on the CPU when the draw is recorded
++ * (panvk_vX_cmd_push_constant.c), which is only right when the UBO contents
++ * are final at record time. This measures what pushing UBO data would gain;
++ * it is not a conformant implementation. */
++static unsigned
++panvk_ubo_push_budget(void)
++{
++   static int budget = -1;
++
++   if (budget < 0) {
++      const char *e = pan_env_flag("PANVK_UBO_PUSH");
++      int v = e ? atoi(e) : 0;
++
++      if (v == 1)
++         v = 32;
++      budget = CLAMP(v, 0, PANVK_MAX_UBO_PUSH_WORDS);
++   }
++   return budget;
++}
++
++struct push_ubo_ctx {
++   const struct panvk_shader_desc_info *desc_info;
++   struct panvk_shader_variant *shader;
++   unsigned budget;
++};
++
++static bool
++push_ubo_word_src(const struct push_ubo_ctx *ctx, uint32_t handle,
++                  uint32_t offset, struct panvk_ubo_push_word *w)
++{
++   const unsigned table = pan_res_handle_get_table(handle);
++   const unsigned idx = pan_res_handle_get_index(handle);
++
++   memset(w, 0, sizeof(*w));
++   if (table == 0) {
++      /* Driver set: only the dynamic buffers can be UBOs. */
++      const struct panvk_shader_desc_info *di = ctx->desc_info;
++
++      if (idx < di->dyn_bufs_start ||
++          idx - di->dyn_bufs_start >= di->dyn_bufs.count)
++         return false;
++
++      uint32_t src = di->dyn_bufs.map[idx - di->dyn_bufs_start];
++
++      w->dyn = 1;
++      w->set = COPY_DESC_HANDLE_EXTRACT_TABLE(src);
++      w->idx = COPY_DESC_HANDLE_EXTRACT_INDEX(src);
++   } else {
++      if (table - 1 >= MAX_SETS || idx > UINT16_MAX)
++         return false;
++
++      w->set = table - 1;
++      w->idx = idx;
++   }
++   w->offset = offset;
++   return true;
++}
++
++static bool
++push_ubo_instr(nir_builder *b, nir_intrinsic_instr *intr, void *data)
++{
++   struct push_ubo_ctx *ctx = data;
++   struct panvk_shader_fau_info *fau = &ctx->shader->fau;
++
++   if (intr->intrinsic != nir_intrinsic_load_ubo ||
++       !nir_src_is_const(intr->src[0]) || !nir_src_is_const(intr->src[1]) ||
++       intr->def.bit_size != 32 || intr->def.num_components > 4)
++      return false;
++
++   const uint32_t handle = nir_src_as_uint(intr->src[0]);
++   const uint32_t offset = nir_src_as_uint(intr->src[1]);
++   const unsigned n = intr->def.num_components;
++   struct panvk_ubo_push_word w[4];
++
++   if (offset % 4)
++      return false;
++
++   for (unsigned c = 0; c < n; c++) {
++      if (!push_ubo_word_src(ctx, handle, offset + 4 * c, &w[c]))
++         return false;
++   }
++
++   /* Reuse a run of words that is already pushed. */
++   int slot = -1;
++   for (unsigned s = 0; s + n <= fau->ubo_push_count && slot < 0; s++) {
++      if (!memcmp(&fau->ubo_push[s], w, n * sizeof(w[0])))
++         slot = s;
++   }
++
++   if (slot < 0) {
++      if (fau->ubo_push_count + n > ctx->budget)
++         return false;
++
++      slot = fau->ubo_push_count;
++      memcpy(&fau->ubo_push[slot], w, n * sizeof(w[0]));
++      fau->ubo_push_count += n;
++   }
++
++   /* Same form as move_push_constant() leaves: final byte offset, base and
++    * range zero. */
++   b->cursor = nir_before_instr(&intr->instr);
++   nir_def *v = nir_load_push_constant(
++      b, n, 32,
++      nir_imm_int(b, fau->ubo_push_start * FAU_WORD_SIZE + slot * 4));
++   nir_def_replace(&intr->def, v);
++   return true;
++}
++
++/* Runs after lower_load_push_consts(): the pushed words go after the sysvals
++ * and the push constants. */
++static void
++panvk_v9_push_ubo(nir_shader *nir,
++                  const struct panvk_shader_desc_info *desc_info,
++                  struct panvk_shader_variant *shader)
++{
++   shader->fau.ubo_push_start = shader->fau.total_count;
++   shader->fau.ubo_push_count = 0;
++
++   unsigned budget = panvk_ubo_push_budget();
++   if (!budget || !desc_info ||
++       (nir->info.stage != MESA_SHADER_VERTEX &&
++        nir->info.stage != MESA_SHADER_FRAGMENT))
++      return;
++
++   budget = MIN2(budget, 2 * (FAU_WORD_COUNT - shader->fau.total_count));
++   if (!budget)
++      return;
++
++   struct push_ubo_ctx ctx = {
++      .desc_info = desc_info,
++      .shader = shader,
++      .budget = budget,
++   };
++
++   if (!nir_shader_intrinsics_pass(nir, push_ubo_instr,
++                                   nir_metadata_control_flow, &ctx))
++      return;
++
++   shader->fau.total_count += DIV_ROUND_UP(shader->fau.ubo_push_count, 2);
++   assert(shader->fau.total_count <= FAU_WORD_COUNT);
++}
++#endif
++
+ static VkResult
+ panvk_compile_nir(struct panvk_device *dev, nir_shader *nir,
+                   VkShaderCreateFlagsEXT shader_flags,
+@@ -2097,6 +2269,9 @@
+             nir_metadata_control_flow, &lower_sysvals_ctx);
+ 
+    lower_load_push_consts(nir, shader);
++#if PAN_ARCH == 9
++   panvk_v9_push_ubo(nir, desc_info, shader);
++#endif
+ 
+    /* Reserve sysvals/push-const, the compiler may fill the remaining space with
+     * promoted constants. */
+@@ -2698,7 +2873,8 @@
+ #if PAN_ARCH == 9
+          if (v == PANVK_VS_VARIANT_HW)
+             panvk_v9_lower_cull_mask(nir, shader->clip_size,
+-                                     shader->cull_size);
++                                     shader->cull_size,
++                                     panvk_dev_clip_cull_off(dev));
+ #endif
+ 
+          struct pan_varying_layout varying_layout;
+@@ -2890,7 +3066,8 @@
+       panvk_lower_nir(dev, nir, info->set_layout_count, info->set_layouts,
+                       info->robustness, state, &shader->desc_info, false);
+ #if PAN_ARCH == 9
+-      panvk_v9_lower_cull_mask(nir, shader->clip_size, shader->cull_size);
++      panvk_v9_lower_cull_mask(nir, shader->clip_size, shader->cull_size,
++                               panvk_dev_clip_cull_off(dev));
+ #endif
+ 
+       struct pan_varying_layout varying_layout;
+@@ -3004,7 +3181,8 @@
+                panvk_v9_fix_rast_output_bases(pnir);
+ #if PAN_ARCH == 9
+             panvk_v9_lower_cull_mask(pnir, shader->clip_size,
+-                                     shader->cull_size);
++                                     shader->cull_size,
++                                     panvk_dev_clip_cull_off(dev));
+ #endif
+          }
+ 
+@@ -3066,7 +3244,8 @@
+ #if PAN_ARCH == 9
+       const bool api_discard = nir->info.fs.uses_discard;
+       variant->fs.clip_cull =
+-         panvk_v9_lower_fs_clip_cull(nir, vs_varying_layout);
++         panvk_v9_lower_fs_clip_cull(nir, vs_varying_layout,
++                                     panvk_dev_clip_cull_off(dev));
+ #endif
+ 
+       /* Lower input intrinsics for fragment shaders early to get the max

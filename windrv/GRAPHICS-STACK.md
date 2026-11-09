@@ -226,6 +226,16 @@ stack"* — pekerjaan berbatas, bukan riset terbuka. Hasil yang dipublikasikan
 semuanya **Android arm64 (Winlator)**, jadi bagian Windows ARM64 + KMD kita
 tetap yang harus dibuktikan sendiri.
 
+**Hasil dry-run (2026-11-09, terukur).** Kelima patch FourFectVK **apply bersih**
+di atas `feeadb5f`; v9 ternyata **tidak punya folder sumber sendiri** — arch 9
+memakai template `panvk_vX_*.c` generik + backend `jm/`, dan dukungannya murni
+dari patch stack (`jm_archs` `[6,7]` → `[6,7,9]`). Dari 9 patch Windows kita,
+**4 apply langsung**, 3–4 perlu rebase mekanis (pindah path / context drift),
+dan `0008` jadi usang. **Blocker baru:** Mesa ≥25.1 menambah `src/panfrost/
+libpan/` (kernel OpenCL helper) yang wajib dikompilasi `mesa_clc`, dan
+`mesa_clc` butuh LLVM + Clang + SPIRV-Tools + SPIRV-LLVM-Translator + libclc.
+Detail, tabel, dan opsi toolchain: [`V9-PANVK-PLAN.md`](V9-PANVK-PLAN.md) §3.2/§3.3.
+
 ### 2.3 Shader — kompilasi vs cache
 
 Dua mode yang harus dibedakan dan tidak boleh dicampur:

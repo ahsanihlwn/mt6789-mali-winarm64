@@ -95,22 +95,99 @@ upgrade + patch-stack port**, which is bounded, testable work:
 Mesa 26.x's `pan_kmod` has explicit kmod backends selected by
 `-Dpanfrost-kmds=`. Two options:
 
-- **Option A (recommended): adopt Mesa's kbase backend.**
+- **Option A: adopt Mesa's kbase backend.**
   Build with `-Dpanfrost-kmds=kbase` and make our KMD answer the **kbase ioctl
   ABI** that backend speaks (`DRM_IOCTL_MALI_*`: `MEM_ALLOC`, `JOB_SUBMIT`,
   `VM_BIND`, `SET_FLAGS`, `GET_VERSION`, eventfd/fence handling). This is the
-  path FourFectVK validates, it is maintained upstream-bound, and it retires our
-  hand-written libdrm shim in favour of a smaller, upstream-supported surface.
-  Cost: our IOCTL ABI (v2) must gain a kbase-compatible front end, and the KMD
-  must implement the semantics the backend assumes (VM zones incl. an exec VA
-  zone — patch `0004` grew it from 4 MiB to 256 MiB because DXVK 2.x with GPL
-  ran out of it).
-- **Option B: keep our libdrm/POSIX shim** and keep the custom IOCTL winsys.
-  Less KMD work, but the shim has to survive the 25.0.7 → 26.3 rebase and we
-  carry a private winsys forever. Not recommended.
+  path FourFectVK validates and it is maintained upstream-bound. Cost:
+  `src/panfrost/lib/kmod/kbase_kmod.c` is **2,045 lines** of assumptions (VM
+  zones, heap allocators, timeline fences, an exec VA zone — patch `0004` grew it
+  from 4 MiB to 256 MiB) that our KMD would have to satisfy. That is a KMD
+  project in its own right.
+- **Option B (recommended after the dry-run, §3.2): keep our libdrm/POSIX
+  shim.** `src/panfrost/lib/kmod/panfrost_kmod.c` is **830 lines** and talks
+  only `DRM_IOCTL_PANFROST_*`, which `windrv/mesa/runtime/mali_drm.cpp` already
+  emulates almost completely: `GET_PARAM`, `CREATE_BO`, `MMAP_BO`,
+  `GET_BO_OFFSET`, `MADVISE`, `WAIT_BO`, `SUBMIT`, `PERFCNT_ENABLE`,
+  `PERFCNT_DUMP`, plus the entire `DRM_IOCTL_SYNCOBJ_*` family including
+  timeline. The 26.3 delta is `SYNC_BO`/`BO_SYNC`, `QUERY_BO_INFO`,
+  `SET_LABEL_BO` and `drmCloseBufferHandle` — small, most of them no-ops.
+
+The first draft of this document recommended Option A. The dry-run reversed
+that: Option A is a 2,045-line KMD contract we do not need yet, while Option B's
+gap is four ioctls. Revisit Option A only if we later choose to align the KMD
+with the vendor kbase ABI.
 
 Note the two are not exclusive: Option A's kbase ioctls can live beside the
 existing v2 IOCTLs, and Jalur A (our own ICD) keeps working either way.
+
+### 3.2 Dry-run results (measured 2026-11-09)
+
+Base: Mesa `feeadb5f` (26.3.0-devel) fetched into `external/mesa-v9`. Patch
+stack: `patches-upstream/0001…0005` of `Noysz/panvk-g99-jm` at `08aa2e62`
+(2026-11-09), vendored into `windrv/mesa/patches-v9/fourfectvk/`.
+
+**All five applied cleanly** with `git apply` (one whitespace warning only).
+
+v9 support comes *entirely* from the patch stack — the base has none of it:
+
+| | base `feeadb5f` | after the stack |
+|---|---|---|
+| `jm_archs` | `[6, 7]` | `[6, 7, 9]` |
+| arch loop | `[6, 7, 10, 11, 12, 13, 14]` | `[6, 7, 9, 10, 11, 12, 13, 14]` |
+| `src/panfrost/vulkan/valhall/` | `.gitkeep` only | `.gitkeep` only |
+| `valhall_files` | `[]` | `[]` |
+| `src/panfrost/lib/kmod/` | – | `pan_kmod.c`, `panfrost_kmod.c`, `panthor_kmod.c`, `kbase_kmod.c` |
+
+There is **no v9-specific source directory**: arch 9 reuses the generic
+`panvk_vX_*.c` templates plus the `jm/` submission backend. 135 files changed
+across 16 directories.
+
+**Our nine Windows patches** (`windrv/mesa/patches/`), `git apply --check` on top
+of the stack:
+
+| patch | result |
+|---|---|
+| `0002-windows-os-mman` | applies |
+| `0005-windows-vk-image-drm-modifier` | applies |
+| `0009-windows-vk-drm-syncobj` | applies |
+| `0010-windows-renderonly-winsys-handle` | applies |
+| `0001-portable-bi-index-key` | **path move only** — `compiler/bifrost_compile.c` → `compiler/bifrost/bifrost_compile.c`; the MSVC bit-field fix is still mandatory |
+| `0003-windows-panvk-drm-ids` | **context drift** in `panvk_physical_device.c` (`get_drm_device_ids` is still there) |
+| `0007-windows-panvk-build-id` | **context drift** in `panvk_instance.c`; the guard must now also cover `copy_build_id_to_sha1()` (line ~342) |
+| `0008-windows-panvk-cache-uuid` | **obsolete** — `get_cache_uuid()` is gone; `device->cache_uuid` is now BLAKE3 over `instance->driver_build_sha` (`panvk_physical_device.c:436-446`), so fixing 0007 fixes it |
+| `0011-windows-panfrost-winsys-handle-int` | **context drift**, and it patches Gallium panfrost, which is unreachable on Windows (`GRAPHICS-STACK.md` §3.1) |
+
+Net: three to four patches need rebasing, all mechanical. **No architectural
+conflict** between the Windows port and the v9 stack.
+
+### 3.3 New blocker found: `libpan` needs CLC, and CLC needs LLVM
+
+Mesa 25.1 added `src/panfrost/libpan/`: OpenCL helper kernels (`libpan_copy.cl`,
+`query_pool.cl`, `draw_helper.cl`, `indirect_dispatch.cl`, plus the stack's
+`tessellation.cl`, `xfb_helper.cl`, `geometry.cl`) compiled to SPIR-V at build
+time by `mesa_clc`, then turned into C++ by `vtn_bindgen2`. `panvk` links
+`idep_libpan_per_arch[arch]` unconditionally
+(`src/panfrost/vulkan/meson.build:191`), so **v9 cannot be built without it**.
+
+`mesa-25.0.7` has **no `libpan` at all** — which is exactly why our current build
+never needed LLVM. Measured on this host:
+
+- `meson.build:1067` — `with_llvm.enable_if(with_clc, error_message : 'CLC
+  requires LLVM')`.
+- `src/compiler/clc/meson.build` needs `dep_clang`, `dep_llvm`,
+  `dep_llvmspirvlib`, `dep_spirv_tools`, `dep_clc` (libclc) and zstd.
+- 26.3 ships **no** wrap for spirv-tools, spirv-llvm-translator or libclc; they
+  are expected as system packages.
+- Visual Studio's LLVM 20.1.8 here has only `bin/` and `lib/` (**no `include/`**,
+  no `llvm-c`/`clang-c` headers), and `clang --print-targets` offers **no
+  `spirv`/`spirv64` target** — so it can neither build CLC nor pre-compile the
+  kernels itself.
+
+Escape hatch, measured in the same tree: with `-Dmesa-clc=system` Mesa skips CLC
+entirely and `with_llvm` is no longer forced (`meson.build:1056-1068`), but it
+then requires **prebuilt native** `mesa_clc.exe` *and* `vtn_bindgen2.exe` on
+`PATH`.
 
 ## 4. Risks / open questions
 
@@ -125,29 +202,50 @@ existing v2 IOCTLs, and Jalur A (our own ICD) keeps working either way.
   fences. Option A pulls real KMD work (multi-AS, non-contiguous BOs, VM_BIND,
   fence/eventfd) forward — the same items already listed as the WDDM
   prerequisite in `ROADMAP.md` Phase 5. The two tracks converge.
-- **Toolchain.** `mesa_clc` / `panfrost_compile` / `vtn_bindgen2` host tools are
-  needed; the Kraid Rust compiler becoming default in 27.0 argues for pinning at
-  26.3.0-devel.
+- **Toolchain — now the top blocker (§3.3).** `libpan` forces `mesa_clc`, which
+  needs LLVM + Clang + SPIRV-Tools + SPIRV-LLVM-Translator + libclc. This host
+  has no LLVM headers and a clang with no SPIR-V target. The Kraid Rust compiler
+  becoming default in 27.0 is one more reason to pin at 26.3.0-devel.
 - **kbase version.** FourFectVK validates against kbase **r54p1**; our vendor
   tree is **r32p1**. Mesa's kbase backend talks the *ioctl ABI*, which is stable
   enough, but flag this if ioctl semantics differ.
 - **Licensing.** Mesa is MIT; the kbase backend is the vendor kbase ABI. No new
   licence obligation is introduced beyond what the repo already ships.
 
-## 5. Suggested next steps (in order)
+## 5. Next steps
 
-1. Clone Mesa at `feeadb5f` into a scratch tree under the repo's git-ignored
-   `external/` (e.g. `external/mesa-v9`, same place `external/mesa` lives — never
-   outside the project folder) and confirm `src/panfrost/vulkan/valhall/` is
-   populated and that v9 JM is present.
-2. Dry-run `patches-upstream/0001…0005` to confirm they apply cleanly to
-   `feeadb5f` (they should — that is the published base).
-3. Port `windrv/mesa/patches/*` onto that tree; write down each conflict.
-4. Decide Option A vs B (§3.1) once step 3 shows how much of the libdrm shim
-   survives.
-5. Only then touch the KMD (kbase ioctl front end and/or multi-AS + VM_BIND).
+Steps 1–3 are **done** — results in §3.2.
 
-Do not start step 5 before step 4; the KMD shape depends on the winsys contract.
+1. ~~Fetch Mesa `feeadb5f` into `external/mesa-v9`.~~ Done. Correction to the
+   earlier wording: the base does **not** contain v9 — `valhall/` is empty and
+   arch 9 is missing from the arch loop. The support is entirely in the stack.
+2. ~~Dry-run `patches-upstream/0001...0005`.~~ Done — all apply cleanly;
+   vendored under `windrv/mesa/patches-v9/fourfectvk/`.
+3. ~~Port `windrv/mesa/patches/*`.~~ Done as a dry-run: four apply, three to
+   four need mechanical rebasing, `0008` is obsolete.
+
+Still open, in order:
+
+4. **Decide the CLC toolchain route (see 3.3)** — the gating decision now:
+   - (a) portable LLVM+Clang SDK extracted into `external/` (self-contained and
+     matching how the WDK and winflexbison are already fetched, but it also needs
+     SPIRV-Tools, SPIRV-LLVM-Translator and libclc built), or
+   - (b) prebuilt native `mesa_clc.exe` + `vtn_bindgen2.exe` as host tools with
+     `-Dmesa-clc=system -Dgallium-rusticl=false` (cheap, but the binaries arrive
+     from outside and must be trusted and version-checked).
+5. Add the four `DRM_IOCTL_PANFROST_*` cases to
+   `windrv/mesa/runtime/mali_drm.cpp`.
+6. Rebase the patches for real and update `patch-mesa.ps1` — it currently starts
+   with `git checkout -- .`, which would now wipe the patch stack underneath; it
+   needs an explicit "base layer" step. Then re-link `vulkan_panfrost.dll` for
+   Windows ARM64.
+7. Verify on the tablet: `vkCreateDevice`, then `vkCmdFillBuffer`, then a first
+   triangle.
+8. Only then touch the KMD (multi-AS, non-contiguous BOs, VM_BIND, fences) — the
+   same work WDDM needs, so the two tracks converge.
+
+Do not start step 8 before step 7; the KMD shape follows what the winsys and the
+first triangle actually require.
 
 ## 6. References
 
