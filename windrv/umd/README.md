@@ -211,6 +211,10 @@ port), which needs Mesa's NIR/Valhall compiler built for `aarch64-windows-msvc`.
   `windrv/DISPLAY-ANDROID.md`, which needs no WDDM and works over the Microsoft
   Basic Display Adapter. There is no vblank wait (submission is synchronous),
   so `vkAcquireNextImageKHR` signals its semaphore/fence immediately.
+  Caveat: each swapchain image is a single *contiguous* KMD BO, so a full
+  1200p surface asks for ~9 MB of contiguous non-cached memory per image. That
+  can fail on a fragmented system; non-contiguous images wait for the
+  page-table path to be validated on silicon.
 
 Submission is **synchronous**: `vkQueueSubmit` runs the work and signals the
 fence before returning. That is legal and makes fences exact; asynchronous
