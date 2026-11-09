@@ -21,7 +21,11 @@
 #ifndef VK_NO_PROTOTYPES
 #define VK_NO_PROTOTYPES 1
 #endif
+#ifndef VK_USE_PLATFORM_WIN32_KHR
+#define VK_USE_PLATFORM_WIN32_KHR 1
+#endif
 #include <vulkan/vulkan.h>
+#include <vulkan/vulkan_win32.h>
 
 /* Supplied by the ICD import library (mali_vk_icd.lib). */
 extern PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance, const char *);
@@ -553,6 +557,167 @@ objdone:
     return (ok == 1) ? 0 : 1;
 }
 
+/* ------------------------------------------------------------------ */
+/* V5: Win32 WSI - surface, swapchain (KMD BOs), acquire, GDI present  */
+/* ------------------------------------------------------------------ */
+
+static void WsiZero(void *p, uint32_t n)
+{
+    uint32_t i;
+    for (i = 0; i < n; i++) ((unsigned char *)p)[i] = 0;
+}
+
+static HWND WsiCreateWindow(void)
+{
+    WNDCLASSA wc;
+    WsiZero(&wc, (uint32_t)sizeof(wc));
+    wc.lpfnWndProc   = DefWindowProcA;
+    wc.hInstance     = GetModuleHandleA(NULL);
+    wc.lpszClassName = "MaliVkSmokeWnd";
+    if (!RegisterClassA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return NULL;
+    return CreateWindowExA(0, "MaliVkSmokeWnd", "mali_vk_smoke",
+                           WS_OVERLAPPEDWINDOW, 0, 0, 320, 240,
+                           NULL, NULL, wc.hInstance, NULL);
+}
+
+static int RunWsi(VkInstance inst, VkPhysicalDevice phys, VkDevice dev, VkQueue queue)
+{
+    PFN_vkCreateWin32SurfaceKHR                   pCreateSurface;
+    PFN_vkDestroySurfaceKHR                       pDestroySurface;
+    PFN_vkGetPhysicalDeviceSurfaceSupportKHR      pSupport;
+    PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR pCaps;
+    PFN_vkGetPhysicalDeviceSurfaceFormatsKHR      pFormats;
+    PFN_vkGetPhysicalDeviceSurfacePresentModesKHR pModes;
+    PFN_vkCreateSwapchainKHR                      pCreateSwapchain;
+    PFN_vkDestroySwapchainKHR                     pDestroySwapchain;
+    PFN_vkGetSwapchainImagesKHR                   pGetImages;
+    PFN_vkAcquireNextImageKHR                     pAcquire;
+    PFN_vkQueuePresentKHR                         pPresent;
+    PFN_vkCreateSemaphore                         pCreateSem;
+    PFN_vkDestroySemaphore                        pDestroySem;
+
+    HWND hwnd = NULL;
+    VkSurfaceKHR surf = VK_NULL_HANDLE;
+    VkSwapchainKHR sc = VK_NULL_HANDLE;
+    VkSemaphore sem = VK_NULL_HANDLE;
+    VkWin32SurfaceCreateInfoKHR  sci;
+    VkSwapchainCreateInfoKHR     scci;
+    VkSemaphoreCreateInfo        semci;
+    VkPresentInfoKHR             pi;
+    VkSurfaceCapabilitiesKHR     caps;
+    VkSurfaceFormatKHR           fmt;
+    VkPresentModeKHR             mode;
+    VkBool32 supported = VK_FALSE;
+    VkImage images[8];
+    uint32_t n, idx = 0;
+    VkResult r;
+    int rc = 1;
+
+    pCreateSurface   = (PFN_vkCreateWin32SurfaceKHR)vkGetInstanceProcAddr(inst, "vkCreateWin32SurfaceKHR");
+    pDestroySurface  = (PFN_vkDestroySurfaceKHR)vkGetInstanceProcAddr(inst, "vkDestroySurfaceKHR");
+    pSupport         = (PFN_vkGetPhysicalDeviceSurfaceSupportKHR)vkGetInstanceProcAddr(inst, "vkGetPhysicalDeviceSurfaceSupportKHR");
+    pCaps            = (PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR)vkGetInstanceProcAddr(inst, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
+    pFormats         = (PFN_vkGetPhysicalDeviceSurfaceFormatsKHR)vkGetInstanceProcAddr(inst, "vkGetPhysicalDeviceSurfaceFormatsKHR");
+    pModes           = (PFN_vkGetPhysicalDeviceSurfacePresentModesKHR)vkGetInstanceProcAddr(inst, "vkGetPhysicalDeviceSurfacePresentModesKHR");
+    pCreateSwapchain = (PFN_vkCreateSwapchainKHR)vkGetInstanceProcAddr(inst, "vkCreateSwapchainKHR");
+    pDestroySwapchain= (PFN_vkDestroySwapchainKHR)vkGetInstanceProcAddr(inst, "vkDestroySwapchainKHR");
+    pGetImages       = (PFN_vkGetSwapchainImagesKHR)vkGetInstanceProcAddr(inst, "vkGetSwapchainImagesKHR");
+    pAcquire         = (PFN_vkAcquireNextImageKHR)vkGetInstanceProcAddr(inst, "vkAcquireNextImageKHR");
+    pPresent         = (PFN_vkQueuePresentKHR)vkGetInstanceProcAddr(inst, "vkQueuePresentKHR");
+    pCreateSem       = (PFN_vkCreateSemaphore)vkGetInstanceProcAddr(inst, "vkCreateSemaphore");
+    pDestroySem      = (PFN_vkDestroySemaphore)vkGetInstanceProcAddr(inst, "vkDestroySemaphore");
+
+    if (!pCreateSurface || !pDestroySurface || !pSupport || !pCaps || !pFormats ||
+        !pModes || !pCreateSwapchain || !pDestroySwapchain || !pGetImages ||
+        !pAcquire || !pPresent || !pCreateSem || !pDestroySem) {
+        Fail("WSI entry points");
+        return 1;
+    }
+
+    hwnd = WsiCreateWindow();
+    if (!hwnd) { Fail("WSI window creation"); return 1; }
+
+    WsiZero(&sci, (uint32_t)sizeof(sci));
+    sci.sType     = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+    sci.hwnd      = hwnd;
+    sci.hinstance = GetModuleHandleA(NULL);
+
+    r = pCreateSurface(inst, &sci, NULL, &surf);
+    if (r != VK_SUCCESS || !surf) { Fail("vkCreateWin32SurfaceKHR"); goto done; }
+
+    r = pSupport(phys, 0, surf, &supported);
+    if (r != VK_SUCCESS || supported != VK_TRUE) { Fail("surface support"); goto done; }
+
+    r = pCaps(phys, surf, &caps);
+    if (r != VK_SUCCESS || caps.currentExtent.width == 0 || caps.currentExtent.height == 0) {
+        Fail("surface capabilities");
+        goto done;
+    }
+
+    n = 8;
+    r = pFormats(phys, surf, &n, &fmt);
+    if (r != VK_SUCCESS || n != 2) { Fail("surface formats"); goto done; }
+
+    n = 8;
+    r = pModes(phys, surf, &n, &mode);
+    if (r != VK_SUCCESS || n != 1 || mode != VK_PRESENT_MODE_FIFO_KHR) { Fail("present modes"); goto done; }
+
+    /* Swapchain images are KMD BOs; creating them proves the BO path. */
+    WsiZero(&scci, (uint32_t)sizeof(scci));
+    scci.sType            = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    scci.surface          = surf;
+    scci.minImageCount    = 2;
+    scci.imageFormat      = fmt.format;
+    scci.imageColorSpace  = fmt.colorSpace;
+    scci.imageExtent      = caps.currentExtent;
+    scci.imageArrayLayers = 1;
+    scci.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    scci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    scci.preTransform     = caps.currentTransform;
+    scci.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    scci.presentMode      = VK_PRESENT_MODE_FIFO_KHR;
+    scci.clipped          = VK_TRUE;
+    scci.oldSwapchain     = VK_NULL_HANDLE;
+
+    r = pCreateSwapchain(dev, &scci, NULL, &sc);
+    if (r != VK_SUCCESS || !sc) { Fail("vkCreateSwapchainKHR"); goto done; }
+
+    n = 8;
+    r = pGetImages(dev, sc, &n, images);
+    if (r != VK_SUCCESS || n < 2) { Fail("vkGetSwapchainImagesKHR"); goto done; }
+
+    Step("V5 swapchain created (images are KMD BOs)");
+
+    WsiZero(&semci, (uint32_t)sizeof(semci));
+    semci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    r = pCreateSem(dev, &semci, NULL, &sem);
+    if (r != VK_SUCCESS || !sem) { Fail("vkCreateSemaphore (WSI)"); goto done; }
+
+    r = pAcquire(dev, sc, 1000000000ull, sem, VK_NULL_HANDLE, &idx);
+    if (r != VK_SUCCESS || idx >= n) { Fail("vkAcquireNextImageKHR"); goto done; }
+
+    WsiZero(&pi, (uint32_t)sizeof(pi));
+    pi.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    pi.waitSemaphoreCount = 1;
+    pi.pWaitSemaphores    = &sem;
+    pi.swapchainCount     = 1;
+    pi.pSwapchains        = &sc;
+    pi.pImageIndices      = &idx;
+
+    r = pPresent(queue, &pi);
+    if (r != VK_SUCCESS) { Fail("vkQueuePresentKHR (GDI blit)"); goto done; }
+
+    Step("V5 acquire + present via GDI blit to the window OK");
+    rc = 0;
+
+done:
+    if (sem) pDestroySem(dev, sem, NULL);
+    if (sc)  pDestroySwapchain(dev, sc, NULL);
+    if (surf) pDestroySurface(inst, surf, NULL);
+    if (hwnd) DestroyWindow(hwnd);
+    return rc;
+}
+
 static int Run(void)
 {
     VkInstance instance = VK_NULL_HANDLE;
@@ -767,6 +932,9 @@ static int Run(void)
     /* ---- V4 object model: images, semaphores, events, pipelines ---- */
     if (RunDeviceObjects(instance, device, queue, visibleType) != 0) goto done;
     Step("V4 device-object coverage done");
+
+    /* ---- V5 Win32 WSI: surface -> swapchain -> acquire -> present ---- */
+    if (RunWsi(instance, phys, device, queue) != 0) goto done;
 
     rc = 0;
 

@@ -6,8 +6,9 @@
   gate for the parts that are testable off-hardware:
 
     1. mali_jc byte layout        the job-descriptor encoder the ICD submits
-    2. Vulkan ICD entry points    all 130 application entry points resolve,
-                                  loader interface v2, *Properties2 chaining
+    2. Vulkan ICD entry points    every application entry point resolves,
+                                  loader interface v2, *Properties2 chaining,
+                                  and the Win32 WSI surface/query set
 
   Test 2 needs external\Vulkan-Headers; if it is absent the step is skipped with
   a pointer to the fetch script rather than failing the whole run. Pass -SkipIcd
@@ -77,7 +78,7 @@ if (-not $SkipIcd) {
     }
 }
 
-$rows += [pscustomobject]@{ Test = 'Vulkan ICD entry points (130)'; Result = $icdResult }
+$rows += [pscustomobject]@{ Test = 'Vulkan ICD entry points + Win32 WSI'; Result = $icdResult }
 
 Write-Host ''
 Write-Host '=== summary ===' -ForegroundColor Cyan

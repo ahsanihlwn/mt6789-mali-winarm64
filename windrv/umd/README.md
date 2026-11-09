@@ -37,10 +37,11 @@ umd/
     src/icd_device.c        instance, physical device, device, memory, buffers
     src/icd_queue.c         command buffers, fill/copy/update, fences, semaphores,
                             events, vkQueueSubmit
+    src/icd_wsi.c           VK_KHR_win32_surface + VK_KHR_swapchain (GDI present)
     src/mali_vk_icd.def     exported loader interface
     manifest/mali_g57_icd.json
-    test/mali_vk_smoke.c    V1–V4 end-to-end smoke test (links the ICD, ARM64)
-    test/mali_vk_iface.c    host x64 entry-point/resolution self-test
+    test/mali_vk_smoke.c    V1–V5 end-to-end smoke test (links the ICD, ARM64)
+    test/mali_vk_iface.c    host x64 entry-point + Win32 WSI self-test
     tools/fetch-deps.ps1    clones external\Vulkan-Headers (git-ignored)
     tools/build-icd.ps1     builds build\mali_vk_icd.dll (+ ARM64 smoke test)
     tools/build-icd-host.ps1 builds an x64 DLL + test and runs it here
@@ -67,8 +68,8 @@ cd vulkan
 `build-icd.ps1` also emits `build\mali_vk_smoke.exe`, a CRT-free ARM64 test that
 links the ICD's import library and resolves every entry point through
 `vkGetInstanceProcAddr`, so no Vulkan loader is needed to run it. On the target
-it walks V1–V4 from `../GRAPHICS-STACK.md` (V1–V3 verified on silicon; the V4
-stage is built but has not been run on the tablet yet) and prints:
+it walks V1–V5 from `../GRAPHICS-STACK.md` (V1–V3 verified on silicon; the V4
+and V5 stages are built but have not been run on the tablet yet) and prints:
 
 ```
 V1 instance created
@@ -83,14 +84,17 @@ V4 semaphore signal/wait accepted by the queue
 V4 event set/reset/query OK
 V4 shader module + descriptor + compute pipeline objects OK
 V4 sampler + render pass + framebuffer OK
+V5 swapchain created (images are KMD BOs)
+V5 acquire + present via GDI blit to the window OK
 RESULT: PASS
 ```
 
 `build-icd-host.ps1` is the half that runs **without the tablet**: it builds the
-same sources as an x64 DLL, then checks that all 130 application entry points
-resolve through `vkGetInstanceProcAddr`, that the loader interface negotiates
-version 2, and that the chained `*Properties2` / `*Features2` / `*MemoryProperties2`
-queries fill their structures. It exits non-zero on any miss, so it is a cheap
+same sources as an x64 DLL, then checks that every application entry point
+resolves through `vkGetInstanceProcAddr`, that the loader interface negotiates
+version 2, that the chained `*Properties2` / `*Features2` / `*MemoryProperties2`
+queries fill their structures, and that the Win32 WSI surface/query set behaves
+(against a real hidden window). It exits non-zero on any miss, so it is a cheap
 regression gate for the whole dispatch table:
 
 ```
@@ -99,12 +103,19 @@ loader/ICD interface
 instance queries
   apiVersion          1.0
   instance ext        VK_KHR_get_physical_device_properties2
+                      VK_KHR_surface
+                      VK_KHR_win32_surface
 physical device queries (chained, no KMD needed)
   properties2         Mali-G57 MC2 (MT6789) - Jalur A
   memory types        2 (1 heap, 256 MB)
   R8G8B8A8_UNORM      transfer + sampled + color
 entry points
-  resolved 130 / 130
+  resolved 142 / 142
+Win32 WSI (surface + queries, no KMD needed)
+  caps                304x201
+  formats             B8G8R8A8_UNORM, B8G8R8A8_SRGB
+  present mode        FIFO
+  surface lifecycle   created and destroyed
   adapters without KMD 0 (VK_SUCCESS)
 RESULT: PASS
 ```
@@ -192,6 +203,14 @@ port), which needs Mesa's NIR/Valhall compiler built for `aarch64-windows-msvc`.
   host-side implementation, which is legal because every BO is host-visible and
   host-coherent.
 * `vkCmdPipelineBarrier` (no-op), fences, `vkQueueSubmit`.
+* Win32 WSI: `VK_KHR_surface` + `VK_KHR_win32_surface` +
+  `VK_KHR_swapchain`. `vkCreateWin32SurfaceKHR` binds a window; the surface
+  queries report the client-area extent, `B8G8R8A8_UNORM`/`_SRGB` and FIFO.
+  Swapchain images are KMD buffer objects, and `vkQueuePresentKHR` copies the
+  image to the window with a GDI `StretchDIBits` blit — the L2 present path in
+  `windrv/DISPLAY-ANDROID.md`, which needs no WDDM and works over the Microsoft
+  Basic Display Adapter. There is no vblank wait (submission is synchronous),
+  so `vkAcquireNextImageKHR` signals its semaphore/fence immediately.
 
 Submission is **synchronous**: `vkQueueSubmit` runs the work and signals the
 fence before returning. That is legal and makes fences exact; asynchronous
@@ -203,11 +222,12 @@ submission comes with the real job scheduler.
 | --- | --- |
 | shader execution (draws, dispatches) | the SPIR-V → Valhall compiler (Mesa) — Jalur B |
 | real image layouts / tiling / sampling | Valhall tiling + the compiler |
-| swapchain / WSI | a display path (WDDM render miniport or a BDA blit) |
+| real vblank throttling, mailbox/relaxed present | a display path with vblank (WDDM miniport) |
 | async queues, timeline semaphores | kernel job scheduler + real IRQ |
 
 Until pipelines exist, D3D11/D3D12 (DXVK/vkd3d-proton) and OpenGL (Zink) cannot
 use this ICD for real workloads — they are downstream of the same compiler.
+The swapchain/present path, by contrast, is complete and testable now.
 
 ### Job encoding used for the GPU zero fill
 

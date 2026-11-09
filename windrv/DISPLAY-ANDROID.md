@@ -131,7 +131,7 @@ Vulkan, bukan display miniport.
 | Tingkat | Yang dibutuhkan | Yang terlihat pengguna | Biaya |
 | --- | --- | --- | --- |
 | **L1** Mali render offscreen | KMD akselerator + Vulkan/GL ICD | tes render lolos, belum ada di layar | sedang (jalan) |
-| **L2** Mali render, hasil tampil di window | Vulkan WSI + blit ke framebuffer BDA | aplikasi dipercepat; desktop tetap BDA | sedang |
+| **L2** Mali render, hasil tampil di window | Vulkan WSI + blit ke framebuffer BDA | aplikasi dipercepat; desktop tetap BDA | sedang (**WSI selesai; render nunggu compiler**) |
 | **L3** Mali muncul di Task Manager | WDDM **render-only** miniport | baris GPU + memori; engine 0% | besar |
 | **L4** Desktop/DWM dirender Mali | D3D11 UMD (+ L3) | desktop mulus, game windowed penuh | sangat besar |
 | **L5** Panel digerakkan MMSYS langsung | display miniport MMSYS/DSI (+ L3) | lepas dari BDA, mode asli, vsync asli | sangat besar + risiko brick |
@@ -141,7 +141,10 @@ Catatan penting per tingkat:
 * **L2 tidak butuh WDDM, tidak butuh UMD, tidak butuh display driver.** Satu-
   satunya biaya: satu copy per frame ke framebuffer BDA. Di 1200p60 itu ± 440
   MB/detik — terasa, tapi bukan penghalang, dan ini jalur yang sama yang dipakai
-  semua GPU non-WDDM.
+  semua GPU non-WDDM. Bagian WSI-nya **sudah ada** di ICD Jalur A
+  (`umd/vulkan/src/icd_wsi.c`): surface, swapchain dengan image = BO KMD, acquire,
+  lalu present blit GDI `StretchDIBits` ke client area. Sisa L2 hanyalah render
+  bertenaga shader, yang menunggu compiler ISA (Jalur B).
 * **L3 tidak membuat angka engine bergerak** kecuali submission dirutekan lewat
   WDDM (`WDDM-PATH.md` §3). Task Manager membaca perf counter yang dipublikasikan
   `dxgkrnl`; device non-WDDM tidak punya counter itu sama sekali.

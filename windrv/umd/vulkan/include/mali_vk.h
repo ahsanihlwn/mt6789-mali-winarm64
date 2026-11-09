@@ -18,7 +18,19 @@
 #define VK_NO_PROTOTYPES 1
 #endif
 
+/*
+ * WSI needs the Win32 platform. The build defines VK_USE_PLATFORM_WIN32_KHR;
+ * <windows.h> is included first so vulkan_win32.h sees HWND/HINSTANCE.
+ */
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef VK_USE_PLATFORM_WIN32_KHR
+#define VK_USE_PLATFORM_WIN32_KHR 1
+#endif
+#include <windows.h>
 #include <vulkan/vulkan.h>
+#include <vulkan/vulkan_win32.h>
 #include <stdint.h>
 #include "mali_umd.h"
 
@@ -137,6 +149,34 @@ typedef struct MaliVkPipeline_T             { MaliVkDevice *Dev; VkPipelineBindP
 typedef struct MaliVkSampler_T              { MaliVkDevice *Dev; } MaliVkSampler;
 
 /* ------------------------------------------------------------------ */
+/* WSI: VK_KHR_surface + VK_KHR_win32_surface + VK_KHR_swapchain       */
+/* ------------------------------------------------------------------ */
+
+typedef struct MaliVkSurface_T {
+    MaliVkInstance *Inst;
+    HWND            Hwnd;      /* owned by the application, never destroyed here */
+} MaliVkSurface;
+
+/*
+ * The present path is a GDI blit into the window (DISPLAY-ANDROID.md L2):
+ * the swapchain image is a KMD BO, CPU-mapped, and StretchDIBits copies it to
+ * the window DC. That works with the Microsoft Basic Display Adapter and needs
+ * no WDDM. It costs one copy per frame; that is the documented price of L2.
+ */
+#define MALI_VK_MAX_SWAPCHAIN_IMAGES 4u
+
+typedef struct MaliVkSwapchain_T {
+    MaliVkDevice  *Dev;
+    MaliVkSurface *Surf;
+    VkFormat       Format;
+    VkExtent2D     Extent;
+    uint32_t       ImageCount;
+    uint32_t       Current;     /* round-robin acquire index */
+    MaliVkMemory  *Mem[MALI_VK_MAX_SWAPCHAIN_IMAGES];
+    MaliVkImage   *Images[MALI_VK_MAX_SWAPCHAIN_IMAGES];
+} MaliVkSwapchain;
+
+/* ------------------------------------------------------------------ */
 /* Tunables                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -146,7 +186,11 @@ typedef struct MaliVkSampler_T              { MaliVkDevice *Dev; } MaliVkSampler
 /* Per-device execution (icd_queue.c). */
 void MaliVkExecuteSubmit(MaliVkDevice *Dev, MaliVkCmdBuffer *Cmd);
 
-/* Small helpers (icd_util.c), CRT-free. */
+/* Small helpers (icd_device.c), CRT-free. */
 int  MaliVkStrEq(const char *a, const char *b);
 void MaliVkZero(void *p, uint64_t n);
 void MaliVkLog(const char *s);
+void *MaliVkAlloc(uint64_t size);
+void  MaliVkFree(void *p);
+uint32_t MaliVkFormatBytes(VkFormat f);
+uint64_t MaliVkAlign4096(uint64_t v);

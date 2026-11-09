@@ -6,7 +6,7 @@
 
 Related: [`umd/README.md`](umd/README.md) (ICD), [`kmd/README.md`](kmd/README.md)
 (driver package), [`mesa/README.md`](mesa/README.md) (Mesa build),
-[`GRAPHICS-STACK.md`](GRAPHICS-STACK.md) (V1–V4 stages).
+[`GRAPHICS-STACK.md`](GRAPHICS-STACK.md) (V1–V5 stages).
 
 ---
 
@@ -27,7 +27,7 @@ first — do not copy a partial kit.
 | `MaliKmd.sys` / `.inf` / `.cat` | `kmd\build\package` | the driver |
 | `malitest.exe` | `kmd\build` | KMD bring-up (power, MMU, job) |
 | `mali_vk_icd.dll`, `mali_g57_icd.json` | `umd\build` | Jalur A Vulkan ICD |
-| `mali_vk_smoke.exe` | `umd\build` | Jalur A V1–V4 smoke |
+| `mali_vk_smoke.exe` | `umd\build` | Jalur A V1-V5 smoke |
 | `libgallium_wgl.dll`, `opengl32.dll`, `z-1.dll` | `mesa\build\mesa-gl` | Gallium panfrost OpenGL (v9 render path) |
 | `vulkan_panfrost.dll` | `mesa\build\mesa` | Mesa PanVK (links; **no v9 backend**, see caveat) |
 
@@ -59,14 +59,17 @@ confirms the freshly staged build.
 
 - [ ] `mali_vk_smoke.exe` next to `mali_vk_icd.dll` (it links the import library
       directly, so no loader is needed).
-- [ ] Run it → expect `RESULT: PASS` through V1–V4 (V1–V3 verified on silicon;
-      V4 is built but has not been run on the tablet).
+- [ ] Run it → expect `RESULT: PASS` through V1–V5 (V1–V3 verified on silicon;
+      V4/V5 are built but have not been run on the tablet). V5 is the Win32 WSI
+      path: it creates a surface + swapchain (images are KMD BOs), acquires, and
+      presents with a GDI blit — no display miniport needed.
 - [ ] Optional, loader-based: copy `mali_g57_icd.json` to
       `%ProgramData%\Vulkan\icd.d\`, set `VK_DRIVER_FILES` to the manifest path,
       and point `vulkaninfo` at it (needs an ARM64 Khronos loader).
 
-Pass = V1–V4 pass. This proves `Vulkan → winsys → IOCTL → Mali job` end to end,
-and that the ICD is a valid loader target. It does **not** execute shaders.
+Pass = V1–V5 pass. This proves `Vulkan → winsys → IOCTL → Mali job` end to end,
+plus a full Win32 surface/swapchain/present cycle, and that the ICD is a valid
+loader target. It does **not** execute shaders.
 
 ---
 

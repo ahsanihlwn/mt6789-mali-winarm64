@@ -15,11 +15,7 @@
 #include "mali_vk.h"
 #include "mali_jc.h"
 
-static void *MaliVkAlloc(uint64_t size)
-{
-    return HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (SIZE_T)size);
-}
-static void MaliVkFree(void *p) { if (p) HeapFree(GetProcessHeap(), 0, p); }
+/* MaliVkAlloc/MaliVkFree live in icd_device.c and are declared in mali_vk.h. */
 
 /* ------------------------------------------------------------------ */
 /* GPU zero fill: WRITE_VALUE ZERO job chain                           */

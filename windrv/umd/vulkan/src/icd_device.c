@@ -34,12 +34,12 @@ void MaliVkLog(const char *s)
     OutputDebugStringA("\r\n");
 }
 
-static void *MaliVkAlloc(uint64_t size)
+void *MaliVkAlloc(uint64_t size)
 {
     return HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (SIZE_T)size);
 }
 
-static void MaliVkFree(void *p)
+void MaliVkFree(void *p)
 {
     if (p) HeapFree(GetProcessHeap(), 0, p);
 }
@@ -69,6 +69,8 @@ static void MaliVkCopyExtension(VkExtensionProperties *dst, const VkExtensionPro
 
 static const VkExtensionProperties g_InstanceExtensions[] = {
     { VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_SPEC_VERSION },
+    { VK_KHR_SURFACE_EXTENSION_NAME,                          VK_KHR_SURFACE_SPEC_VERSION },
+    { VK_KHR_WIN32_SURFACE_EXTENSION_NAME,                    VK_KHR_WIN32_SURFACE_SPEC_VERSION },
 };
 
 VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateInstanceExtensionProperties(
@@ -427,6 +429,7 @@ static const VkExtensionProperties g_DeviceExtensions[] = {
     { VK_KHR_MAINTENANCE2_EXTENSION_NAME,              VK_KHR_MAINTENANCE2_SPEC_VERSION },
     { VK_KHR_MAINTENANCE3_EXTENSION_NAME,              VK_KHR_MAINTENANCE3_SPEC_VERSION },
     { VK_KHR_BIND_MEMORY_2_EXTENSION_NAME,             VK_KHR_BIND_MEMORY_2_SPEC_VERSION },
+    { VK_KHR_SWAPCHAIN_EXTENSION_NAME,                 VK_KHR_SWAPCHAIN_SPEC_VERSION },
 };
 
 VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateDeviceExtensionProperties(
@@ -714,7 +717,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkBindBufferMemory2KHR(
 /* Images                                                              */
 /* ------------------------------------------------------------------ */
 
-static uint32_t MaliVkFormatBytes(VkFormat f)
+uint32_t MaliVkFormatBytes(VkFormat f)
 {
     switch (f) {
     case VK_FORMAT_R8_UNORM:          return 1;
@@ -725,7 +728,7 @@ static uint32_t MaliVkFormatBytes(VkFormat f)
     }
 }
 
-static uint64_t MaliVkAlign4096(uint64_t v)
+uint64_t MaliVkAlign4096(uint64_t v)
 {
     return (v + 4095ull) & ~4095ull;
 }

@@ -191,8 +191,12 @@ usable:
     (a) **Gallium `panfrost` OpenGL** — mainline *does* support v9; render in GL
     first; (b) software Vulkan (lavapipe) under vkd3d as a stopgap; (c) write a
     Valhall-JM v9 Vulkan backend (new backend, not a port).
-  - [ ] Implement/adjust Win32 WSI (`VK_KHR_win32_surface`) so swapchain present
-    works — needed by Zink too, so it follows whichever GL/Vulkan driver is real.
+  - [x] **Win32 WSI** (`VK_KHR_surface` + `VK_KHR_win32_surface` +
+    `VK_KHR_swapchain`): surface binding, client-area caps, BGRA formats, FIFO,
+    swapchain images as KMD BOs, and `vkQueuePresentKHR` as a GDI
+    `StretchDIBits` blit (rung L2, no WDDM). Tested on the x64 host
+    (`mali_vk_iface`), on-device stage V5 in `mali_vk_smoke`. Only real vblank
+    throttling is still missing, and that needs a display path.
 - Result: a clear triangle / Vulkan CTS smoke test on Mali.
 - This, not the KMD, is what makes the GPU visible to applications.
 
@@ -266,7 +270,8 @@ Written by us:
   mainline target).
 - ✅ Mesa's ARM64-Windows build is now proven here: `vulkan_panfrost.dll`,
   cross-compiled with clang-cl and linked CRT-free.
-- Win32 WSI (swapchain present) is a separate integration point from rendering.
+- Win32 WSI (swapchain present) is done for Jalur A (GDI blit, L2); vblank waits
+  are the only part that still needs a display path.
 - ARM64 driver signing: test-sign for dev, attestation/WHQL to ship.
 - No physical debug is cheap: keep the UART console and a WinPE boot loop.
 - Timeline is months of iteration, not weeks. Each phase delivers something

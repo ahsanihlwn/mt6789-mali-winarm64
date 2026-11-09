@@ -34,9 +34,10 @@ driver only ever owns the GPU core itself.
 | Interrupt delivery | ⚠️ polling fallback (no ACPI IRQ resource yet) |
 | UMD winsys `windrv/umd` (IOCTL ABI v2 wrapper) | ✅ builds ARM64, CRT-free |
 | Job-chain builder `mali_jc` + host unit test | ✅ 26/26 checks pass on x64 |
-| Vulkan ICD `windrv/umd/vulkan` | ⚠️ full Vulkan 1.0 + 1.1-discovery object model and transfers; no shader execution |
-| Vulkan ICD host self-test (`tools\run-host-tests.ps1`) | ✅ 130/130 entry points resolve on x64 |
+| Vulkan ICD `windrv/umd/vulkan` | ⚠️ full Vulkan 1.0 + 1.1-discovery object model, transfers, and Win32 WSI (swapchain present via GDI blit); no shader execution |
+| Vulkan ICD host self-test (`tools\run-host-tests.ps1`) | ✅ entry points + Win32 WSI resolve on x64 |
 | Vulkan ICD device-object smoke test (V4a) | ⏳ builds for ARM64; awaiting tablet to run |
+| Vulkan ICD Win32 WSI smoke stage (V5) | ⏳ builds for ARM64; awaiting tablet to run |
 | Vulkan ICD (Mesa PanVK port, render) | ❌ not started |
 | D3D12 / DXVK / vkd3d-proton path | ❌ depends on a shader-capable ICD |
 | OpenGL (Zink) path | ❌ depends on a shader-capable ICD |
@@ -203,7 +204,7 @@ It builds and runs, as x64 binaries on the development machine:
 | Test | What it proves |
 | --- | --- |
 | `mali_jc` unit test | job-descriptor byte layout: 128-byte stride, `job_index`, `next_job`, 64-bit addresses |
-| ICD entry-point self-test | all 130 application entry points resolve, loader interface v2, chained `*Properties2` queries fill correctly |
+| ICD entry-point self-test | every application entry point resolves, loader interface v2, chained `*Properties2` queries fill correctly, and the Win32 surface/swapchain extension set behaves |
 
 Both must print `PASS`; the script exits non-zero otherwise. The ICD step is
 skipped with a pointer to `fetch-deps.ps1` when `external\Vulkan-Headers` is

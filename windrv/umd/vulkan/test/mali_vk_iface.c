@@ -193,6 +193,19 @@ static const char *const g_Names[] = {
     "vkCmdWaitEvents",
     "vkQueueSubmit",
 
+    "vkCreateWin32SurfaceKHR",
+    "vkDestroySurfaceKHR",
+    "vkGetPhysicalDeviceWin32PresentationSupportKHR",
+    "vkGetPhysicalDeviceSurfaceSupportKHR",
+    "vkGetPhysicalDeviceSurfaceCapabilitiesKHR",
+    "vkGetPhysicalDeviceSurfaceFormatsKHR",
+    "vkGetPhysicalDeviceSurfacePresentModesKHR",
+    "vkCreateSwapchainKHR",
+    "vkDestroySwapchainKHR",
+    "vkGetSwapchainImagesKHR",
+    "vkAcquireNextImageKHR",
+    "vkQueuePresentKHR",
+
     "vkGetInstanceProcAddr",
     "vkGetDeviceProcAddr",
     0
@@ -249,7 +262,8 @@ static void TestInstanceQueries(void)
     PFN_vkVoidFunction fp;
     VkResult r;
     uint32_t count, api = 0;
-    VkExtensionProperties ext;
+    VkExtensionProperties exts[8];
+    uint32_t i, haveProps2 = 0, haveSurface = 0, haveWin32 = 0;
 
     Step("instance queries");
 
@@ -263,13 +277,23 @@ static void TestInstanceQueries(void)
     if (!fp) { Fail("vkEnumerateInstanceExtensionProperties not resolvable"); return; }
     count = 0;
     r = ((PFN_vkEnumerateInstanceExtensionProperties)fp)(NULL, &count, NULL);
-    if (r != VK_SUCCESS || count != 1) { Fail("expected exactly 1 instance extension"); return; }
-    r = ((PFN_vkEnumerateInstanceExtensionProperties)fp)(NULL, &count, &ext);
-    if (r != VK_SUCCESS || !StrEq(ext.extensionName, "VK_KHR_get_physical_device_properties2")) {
-        Fail("wrong instance extension name");
+    if (r != VK_SUCCESS || count != 3) { Fail("expected exactly 3 instance extensions"); return; }
+    if (count > 8) count = 8;
+    r = ((PFN_vkEnumerateInstanceExtensionProperties)fp)(NULL, &count, exts);
+    if (r != VK_SUCCESS) { Fail("vkEnumerateInstanceExtensionProperties(list)"); return; }
+
+    for (i = 0; i < count; i++) {
+        if (StrEq(exts[i].extensionName, "VK_KHR_get_physical_device_properties2")) haveProps2 = 1;
+        if (StrEq(exts[i].extensionName, "VK_KHR_surface"))                        haveSurface = 1;
+        if (StrEq(exts[i].extensionName, "VK_KHR_win32_surface"))                  haveWin32 = 1;
+    }
+    if (!haveProps2 || !haveSurface || !haveWin32) {
+        Fail("instance extension set is incomplete");
         return;
     }
-    Out("  instance ext        "); Out(ext.extensionName); Out("\r\n");
+    Out("  instance ext        VK_KHR_get_physical_device_properties2\r\n");
+    Out("                      VK_KHR_surface\r\n");
+    Out("                      VK_KHR_win32_surface\r\n");
 }
 
 static void TestProperties2(void)
@@ -355,6 +379,125 @@ static void TestProperties2(void)
     Out("  R8G8B8A8_UNORM      transfer + sampled + color\r\n");
 }
 
+/*
+ * WSI without the KMD: surface creation and every surface query only touch
+ * Win32, so the x64 host build can exercise them. Swapchain creation needs a
+ * KMD BO and is covered by the on-device smoke test instead.
+ */
+
+/* A real (never shown) window, so GetClientRect gives a non-zero extent. */
+static HWND MaliTestCreateWindow(void)
+{
+    WNDCLASSA wc;
+    HWND h;
+    unsigned char *p = (unsigned char *)&wc;
+    uint32_t n = (uint32_t)sizeof(wc);
+
+    while (n--) *p++ = 0;
+    wc.lpfnWndProc   = DefWindowProcA;
+    wc.hInstance     = GetModuleHandleA(NULL);
+    wc.lpszClassName = "MaliVkIfaceTestWnd";
+
+    if (!RegisterClassA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return NULL;
+
+    h = CreateWindowExA(0, "MaliVkIfaceTestWnd", "mali_vk_iface",
+                        WS_OVERLAPPEDWINDOW, 0, 0, 320, 240,
+                        NULL, NULL, wc.hInstance, NULL);
+    return h;
+}
+
+static void TestWsi(VkInstance inst)
+{
+    PFN_vkVoidFunction fp;
+    VkResult r;
+    VkSurfaceKHR surf = VK_NULL_HANDLE;
+    VkWin32SurfaceCreateInfoKHR sci;
+    VkSurfaceCapabilitiesKHR caps;
+    VkSurfaceFormatKHR fmts[4];
+    VkPresentModeKHR modes[4];
+    VkBool32 present = VK_FALSE, supported = VK_FALSE;
+    uint32_t n, k;
+    HWND hwnd;
+
+    Step("Win32 WSI (surface + queries, no KMD needed)");
+
+    hwnd = MaliTestCreateWindow();
+    if (!hwnd) { Fail("no window to bind a surface to"); return; }
+
+    fp = vkGetInstanceProcAddr(inst, "vkCreateWin32SurfaceKHR");
+    if (!fp) { Fail("vkCreateWin32SurfaceKHR"); return; }
+
+    {
+        unsigned char *p = (unsigned char *)&sci;
+        k = (uint32_t)sizeof(sci);
+        while (k--) *p++ = 0;
+    }
+    sci.sType      = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+    sci.hwnd       = hwnd;
+    sci.hinstance  = GetModuleHandleA(NULL);
+
+    r = ((PFN_vkCreateWin32SurfaceKHR)fp)(inst, &sci, NULL, &surf);
+    if (r != VK_SUCCESS || !surf) { Fail("vkCreateWin32SurfaceKHR"); goto done; }
+
+    fp = vkGetInstanceProcAddr(inst, "vkGetPhysicalDeviceWin32PresentationSupportKHR");
+    if (!fp || ((PFN_vkGetPhysicalDeviceWin32PresentationSupportKHR)fp)(VK_NULL_HANDLE, 0) != VK_TRUE) {
+        Fail("Win32 presentation support");
+        goto done;
+    }
+
+    fp = vkGetInstanceProcAddr(inst, "vkGetPhysicalDeviceSurfaceSupportKHR");
+    if (!fp || ((PFN_vkGetPhysicalDeviceSurfaceSupportKHR)fp)(VK_NULL_HANDLE, 0, surf, &supported) != VK_SUCCESS ||
+        supported != VK_TRUE) {
+        Fail("surface support for queue family 0");
+        goto done;
+    }
+
+    fp = vkGetInstanceProcAddr(inst, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
+    if (!fp) { Fail("vkGetPhysicalDeviceSurfaceCapabilitiesKHR"); goto done; }
+    r = ((PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR)fp)(VK_NULL_HANDLE, surf, &caps);
+    if (r != VK_SUCCESS) { Fail("surface capabilities"); goto done; }
+    if (caps.currentExtent.width == 0 || caps.currentExtent.height == 0) {
+        Fail("surface caps report a zero current extent");
+        goto done;
+    }
+    if (caps.maxImageCount < 2 || !(caps.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
+        Fail("surface caps are not usable as a color target");
+        goto done;
+    }
+    Out("  caps                ");
+    OutDec(caps.currentExtent.width); Out("x"); OutDec(caps.currentExtent.height);
+    Out("\r\n");
+
+    fp = vkGetInstanceProcAddr(inst, "vkGetPhysicalDeviceSurfaceFormatsKHR");
+    if (!fp) { Fail("vkGetPhysicalDeviceSurfaceFormatsKHR"); goto done; }
+    n = 4;
+    r = ((PFN_vkGetPhysicalDeviceSurfaceFormatsKHR)fp)(VK_NULL_HANDLE, surf, &n, fmts);
+    if (r != VK_SUCCESS || n != 2) { Fail("surface formats (expected 2)"); goto done; }
+    if (fmts[0].format != VK_FORMAT_B8G8R8A8_UNORM || fmts[1].format != VK_FORMAT_B8G8R8A8_SRGB) {
+        Fail("surface format order");
+        goto done;
+    }
+    Out("  formats             B8G8R8A8_UNORM, B8G8R8A8_SRGB\r\n");
+
+    fp = vkGetInstanceProcAddr(inst, "vkGetPhysicalDeviceSurfacePresentModesKHR");
+    if (!fp) { Fail("vkGetPhysicalDeviceSurfacePresentModesKHR"); goto done; }
+    n = 4;
+    r = ((PFN_vkGetPhysicalDeviceSurfacePresentModesKHR)fp)(VK_NULL_HANDLE, surf, &n, modes);
+    if (r != VK_SUCCESS || n != 1 || modes[0] != VK_PRESENT_MODE_FIFO_KHR) {
+        Fail("present modes (expected FIFO only)");
+        goto done;
+    }
+    Out("  present mode        FIFO\r\n");
+
+    present = VK_TRUE;
+
+done:
+    fp = vkGetInstanceProcAddr(inst, "vkDestroySurfaceKHR");
+    if (fp) ((PFN_vkDestroySurfaceKHR)fp)(inst, surf, NULL);
+    if (hwnd) DestroyWindow(hwnd);
+    if (present) Out("  surface lifecycle   created and destroyed\r\n");
+}
+
 static void TestNoKmd(void)
 {
     PFN_vkVoidFunction fp;
@@ -389,6 +532,7 @@ static void TestNoKmd(void)
     if (r != VK_SUCCESS || !inst) { Fail("vkCreateInstance"); return; }
 
     TestEntryPoints(inst);
+    TestWsi(inst);
 
     fp = vkGetInstanceProcAddr(inst, "vkEnumeratePhysicalDevices");
     if (!fp) { Fail("vkEnumeratePhysicalDevices"); return; }

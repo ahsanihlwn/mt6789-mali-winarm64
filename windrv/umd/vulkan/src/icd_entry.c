@@ -159,6 +159,20 @@ extern void VKAPI_CALL vkCmdSetEvent(VkCommandBuffer, VkEvent, VkPipelineStageFl
 extern void VKAPI_CALL vkCmdResetEvent(VkCommandBuffer, VkEvent, VkPipelineStageFlags);
 extern void VKAPI_CALL vkCmdWaitEvents(VkCommandBuffer, uint32_t, const VkEvent *, VkPipelineStageFlags, VkPipelineStageFlags, uint32_t, const VkMemoryBarrier *, uint32_t, const VkBufferMemoryBarrier *, uint32_t, const VkImageMemoryBarrier *);
 
+/* WSI (icd_wsi.c) */
+extern VkResult VKAPI_CALL vkCreateWin32SurfaceKHR(VkInstance, const VkWin32SurfaceCreateInfoKHR *, const VkAllocationCallbacks *, VkSurfaceKHR *);
+extern void VKAPI_CALL vkDestroySurfaceKHR(VkInstance, VkSurfaceKHR, const VkAllocationCallbacks *);
+extern VkBool32 VKAPI_CALL vkGetPhysicalDeviceWin32PresentationSupportKHR(VkPhysicalDevice, uint32_t);
+extern VkResult VKAPI_CALL vkGetPhysicalDeviceSurfaceSupportKHR(VkPhysicalDevice, uint32_t, VkSurfaceKHR, VkBool32 *);
+extern VkResult VKAPI_CALL vkGetPhysicalDeviceSurfaceCapabilitiesKHR(VkPhysicalDevice, VkSurfaceKHR, VkSurfaceCapabilitiesKHR *);
+extern VkResult VKAPI_CALL vkGetPhysicalDeviceSurfaceFormatsKHR(VkPhysicalDevice, VkSurfaceKHR, uint32_t *, VkSurfaceFormatKHR *);
+extern VkResult VKAPI_CALL vkGetPhysicalDeviceSurfacePresentModesKHR(VkPhysicalDevice, VkSurfaceKHR, uint32_t *, VkPresentModeKHR *);
+extern VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice, const VkSwapchainCreateInfoKHR *, const VkAllocationCallbacks *, VkSwapchainKHR *);
+extern void VKAPI_CALL vkDestroySwapchainKHR(VkDevice, VkSwapchainKHR, const VkAllocationCallbacks *);
+extern VkResult VKAPI_CALL vkGetSwapchainImagesKHR(VkDevice, VkSwapchainKHR, uint32_t *, VkImage *);
+extern VkResult VKAPI_CALL vkAcquireNextImageKHR(VkDevice, VkSwapchainKHR, uint64_t, VkSemaphore, VkFence, uint32_t *);
+extern VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue, const VkPresentInfoKHR *);
+
 /* ---------------- dispatch table ---------------------------------------- */
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance, const char *);
@@ -301,6 +315,20 @@ static const MaliVkEntry g_Entries[] = {
     { "vkCmdSetEvent",                          (PFN_vkVoidFunction)vkCmdSetEvent },
     { "vkCmdResetEvent",                        (PFN_vkVoidFunction)vkCmdResetEvent },
     { "vkCmdWaitEvents",                        (PFN_vkVoidFunction)vkCmdWaitEvents },
+
+    /* WSI */
+    { "vkCreateWin32SurfaceKHR",                (PFN_vkVoidFunction)vkCreateWin32SurfaceKHR },
+    { "vkDestroySurfaceKHR",                    (PFN_vkVoidFunction)vkDestroySurfaceKHR },
+    { "vkGetPhysicalDeviceWin32PresentationSupportKHR", (PFN_vkVoidFunction)vkGetPhysicalDeviceWin32PresentationSupportKHR },
+    { "vkGetPhysicalDeviceSurfaceSupportKHR",   (PFN_vkVoidFunction)vkGetPhysicalDeviceSurfaceSupportKHR },
+    { "vkGetPhysicalDeviceSurfaceCapabilitiesKHR", (PFN_vkVoidFunction)vkGetPhysicalDeviceSurfaceCapabilitiesKHR },
+    { "vkGetPhysicalDeviceSurfaceFormatsKHR",   (PFN_vkVoidFunction)vkGetPhysicalDeviceSurfaceFormatsKHR },
+    { "vkGetPhysicalDeviceSurfacePresentModesKHR", (PFN_vkVoidFunction)vkGetPhysicalDeviceSurfacePresentModesKHR },
+    { "vkCreateSwapchainKHR",                   (PFN_vkVoidFunction)vkCreateSwapchainKHR },
+    { "vkDestroySwapchainKHR",                  (PFN_vkVoidFunction)vkDestroySwapchainKHR },
+    { "vkGetSwapchainImagesKHR",                (PFN_vkVoidFunction)vkGetSwapchainImagesKHR },
+    { "vkAcquireNextImageKHR",                  (PFN_vkVoidFunction)vkAcquireNextImageKHR },
+    { "vkQueuePresentKHR",                      (PFN_vkVoidFunction)vkQueuePresentKHR },
     { 0, 0 }
 };
 

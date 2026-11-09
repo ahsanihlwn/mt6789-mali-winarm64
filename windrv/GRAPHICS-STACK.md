@@ -110,17 +110,20 @@ Status terukur Jalur A (per `windrv/umd/README.md`):
 
 | Bukti | Cara uji | Hasil |
 | --- | --- | --- |
-| 130 entry point aplikasi resolve | `tools\build-icd-host.ps1` (x64, tanpa tablet) | **PASS 130/130** |
+| 142 entry point aplikasi resolve (termasuk WSI) | `tools\build-icd-host.ps1` (x64, tanpa tablet) | **PASS 142/142** |
 | loader/ICD interface v2 | idem | **PASS** |
 | `Properties2` + UUID + LUID + driver props | idem | **PASS** |
 | `*Features2` / `*MemoryProperties2` / `*FormatProperties2` | idem | **PASS** |
+| Win32 WSI: surface, caps, format, present mode, lifecycle | idem (window tersembunyi) | **PASS** |
 | `vkEnumeratePhysicalDevices` tanpa KMD = 0 adapter, `VK_SUCCESS` | idem | **PASS** |
 | fill nol di GPU (WRITE_VALUE chain) | `mali_vk_smoke.exe` di tablet | **PASS (V3)** |
 | image/BO round-trip, update, semaphore, event, pipeline stub | `mali_vk_smoke.exe` di tablet | **dibangun; menunggu tablet** |
+| swapchain (image = BO KMD) + acquire + present blit GDI | `mali_vk_smoke.exe` di tablet | **dibangun; menunggu tablet** |
 
 Jadi Jalur A sudah **bukan** sekadar "bisa instance/device": permukaan Vulkan 1.0
-+ 1.1-discovery sudah lengkap untuk object model, dan satu-satunya yang tersisa
-sebelum render nyata adalah **eksekusi shader** (Jalur B).
++ 1.1-discovery + Win32 WSI (swapchain present lewat blit GDI) sudah lengkap untuk
+object model, dan satu-satunya yang tersisa sebelum render nyata adalah
+**eksekusi shader** (Jalur B).
 
 **Jalur B — port Mesa PanVK (Valhall).**
 Ini yang memberi render nyata (segitiga, tekstur, compute). PanVK sudah tahu
@@ -260,16 +263,19 @@ datang hampir otomatis**. Ini alasan urutan: Vulkan dulu, OpenGL menyusul.
 >
 > Status 2026-11-09: jalur Gallium panfrost itu **sudah di-link** —
 > `tools\build-mesa.ps1 -Kind gl` → `libgallium_wgl.dll` + `opengl32.dll`
-> (ARM64, UCRT in-box saja). Yang belum: winsys DRM → KMD dan WSI untuk present.
+> (ARM64, UCRT in-box saja). Yang belum: winsys DRM → KMD. WSI present untuk
+> ICD Jalur A sudah ada (lihat §3.2).
 
 ### 3.2 Yang perlu disiapkan
 
 - `opengl32.dll` (Mesa `llvmpipe` tidak dipakai; kita mau Zink) → Zink memakai
   Vulkan ICD kita. Mesa Windows sudah memuat `opengl32.dll` + `libgallium_wgl.dll`;
   kita arahkan Zink ke ICD kita.
-- WSI: Zink butuh `VK_KHR_win32_surface` untuk window OpenGL. Sampai WSI ada,
-  GL tetap bisa untuk offscreen/headless (rendering ke FBO), window present
-  menyusul — sama seperti Vulkan.
+- WSI: Zink butuh `VK_KHR_win32_surface` untuk window OpenGL. **Sudah tersedia**
+  di ICD Jalur A (`icd_wsi.c`): surface, swapchain (image = BO KMD), acquire, dan
+  present lewat blit GDI `StretchDIBits` ke window — rung L2 di
+  `DISPLAY-ANDROID.md`, tanpa WDDM. Yang belum hanyalah vblank throttling asli;
+  submit kita sinkron, jadi acquire langsung menandai semaphore/fence.
 
 ### 3.3 Fallback GL tanpa shader
 
@@ -326,7 +332,7 @@ Satu kolom satu tahap, satu baris satu bukti.
 | V3 | ICD: submit + fence | `vkCmdFillBuffer` (job WRITE_VALUE) + `vkWaitForFences` hijau |
 | V4a | ICD: object model tanpa shader | update/image/semaphore/event/pipeline-stub di `mali_vk_smoke.exe` hijau |
 | V4b | ICD: pipeline + shader (butuh Mesa) | compute shader trivial menulis buffer; lalu segitiga offscreen |
-| V5 | WSI win32 surface | swapchain present ke window (butuh WDDM/display miniport atau blit) |
+| V5 | WSI win32 surface | surface + swapchain (image = BO KMD) + acquire + present blit GDI ke window — **selesai**, diuji di host x64; validasi silikon lewat `mali_vk_smoke` V5 |
 | X1 | DXVK di atas ICD | aplikasi D3D11 sederhana render di Mali |
 | X2 | vkd3d-proton di atas ICD | aplikasi D3D12 sederhana render di Mali |
 | G1 | Zink di atas ICD | aplikasi OpenGL sederhana render di Mali |
@@ -404,12 +410,13 @@ yang di-hard-code, jadi repo bisa di-build di mesin lain.
 - **Build Windows ARM64.** ✅ Selesai: Meson + clang-cl + shim CRT-free + shim
   libdrm (`mesa/README.md`). Bukan lagi risiko; jadi bukti.
 - **PanVK berasumsi Linux DRM.** ✅ Sebagian besar ditutup: `mali_drm.cpp`
-  (libdrm/libsyncobj/POSIX) + `cross/compat/*`; sisa WSI dan permukaan spesifik
-  yang belum.
+  (libdrm/libsyncobj/POSIX) + `cross/compat/*`; sisa WSI di Mesa belum.
 - **vkd3d-proton butuh fitur Vulkan modern.** ICD harus matang sebelum D3D12
   memberi hasil; jangan urutkan vkd3d terlalu dini.
-- **WSI/present.** Window present butuh jalur display (WDDM miniport atau blit
-  ke BDA). Offscreen/headless selalu lebih dulu bisa.
+- **WSI/present.** ✅ Jalur A selesai: `VK_KHR_win32_surface` + `VK_KHR_swapchain`
+  dengan present blit GDI ke window (rung L2, tanpa WDDM). Yang tersisa hanya
+  vblank asli (butuh jalur display/WDDM) — bukan penghalang untuk menampilkan
+  frame.
 - **Hardware retail tanpa dokumentasi internal Arm.** Setiap klaim harus
   diverifikasi di silicon, bukan diasumsikan.
 

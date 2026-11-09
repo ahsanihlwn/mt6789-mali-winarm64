@@ -88,6 +88,7 @@ try {
         'src\icd_entry.c',
         'src\icd_device.c',
         'src\icd_queue.c',
+        'src\icd_wsi.c',
         (Join-Path $umd 'src\mali_umd.c'),
         (Join-Path $umd 'src\mali_jc.c')
     )
@@ -114,7 +115,7 @@ try {
         ("/libpath:{0}" -f $t.SdkUmLibArm64),
         ("/def:{0}" -f $def),
         ("/out:{0}" -f $dll)
-    ) + $objs + @('kernel32.lib','setupapi.lib','advapi32.lib')
+    ) + $objs + @('kernel32.lib','setupapi.lib','advapi32.lib','gdi32.lib','user32.lib')
     & $t.Linker @lc
     if ($LASTEXITCODE -ne 0) { throw 'link failed' }
 
@@ -134,7 +135,7 @@ try {
         '/nologo','/subsystem:console','/machine:arm64','/entry:mainCRTStartup','/nodefaultlib','/debug',
         ("/libpath:{0}" -f $t.SdkUmLibArm64),
         ("/out:{0}" -f $smoke)
-    ) + @($smokeObj) + @((Join-Path $out 'mali_vk_icd.lib'), 'kernel32.lib')
+    ) + @($smokeObj) + @((Join-Path $out 'mali_vk_icd.lib'), 'kernel32.lib', 'user32.lib')
     & $t.Linker @sll
     if ($LASTEXITCODE -ne 0) { throw 'link failed: mali_vk_smoke.exe' }
 
