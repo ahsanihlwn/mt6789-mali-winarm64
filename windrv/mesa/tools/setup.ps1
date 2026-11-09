@@ -90,9 +90,23 @@ try {
     }
 
     $target = '/clang:--target=aarch64-pc-windows-msvc'
-    $cArgs  = @($target, '/imsvc', $t.SdkUcrt, '/imsvc', $t.SdkShared, '/imsvc', $t.SdkUm)
+    # -fuse-ld=lld is a *driver* flag: Meson appends c_link_args after "/link", so
+    # it must live in c_args to reach clang-cl itself (otherwise clang-cl tries
+    # the absent link.exe and fails with "program not executable").
+    # /FI force-includes the MSVC/ARM64 compatibility layer: lower-case
+    # _interlocked* intrinsics, asprintf, ...  See cross\msvc-compat.h.
+    $compatHdr = To-Fwd (Join-Path $mesaRoot 'cross\msvc-compat.h')
+    # cross\compat holds POSIX headers MSVC/ARM64 lacks but Mesa's Unix-oriented
+    # files still include (sys/ioccom.h, sys/mman.h, err.h), plus redirects for
+    # the DirectX-Headers include layout (directx/d3d12.h, dxguids/dxguids.h).
+    $compatDir = To-Fwd (Join-Path $mesaRoot 'cross\compat')
+    $cArgs  = @($target, '-fuse-ld=lld', "/FI$compatHdr", "-I$compatDir", '/imsvc', $t.SdkUcrt, '/imsvc', $t.SdkShared, '/imsvc', $t.SdkUm)
 
-    $linkArgs = @($target, '-fuse-ld=lld', "/libpath:$libUmArm64", "/libpath:$libUcrtArm64", "/libpath:$vcLibArm64")
+    # No /clang:--target here: Meson passes c_link_args straight to lld-link, which
+    # does not understand /clang:. The machine comes from /MACHINE:arm64, which
+    # Meson derives from the target it detects (see tools\build-mesa.ps1, which
+    # sets CCC_OVERRIDE_OPTIONS so clang-cl reports aarch64 to Meson).
+    $linkArgs = @("/libpath:$libUmArm64", "/libpath:$libUcrtArm64", "/libpath:$vcLibArm64")
 
     if (-not $SystemCrt) {
         # CRT-free recipe: the SDK's dynamic UCRT + GS cookie + msvcurt + our
@@ -105,6 +119,7 @@ try {
         }
         $linkArgs += @('/nodefaultlib',
                        'ucrt.lib', 'BufferOverflow.lib', 'msvcurt.lib', 'kernel32.lib', 'ntdll.lib',
+                       'setupapi.lib', 'advapi32.lib',
                        $shimLib)
     }
 

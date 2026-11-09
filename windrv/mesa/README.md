@@ -1,11 +1,10 @@
 # Mesa / PanVK build environment (Jalur B)
 
 This directory is the **build-toolchain side of Jalur B** (the Mesa PanVK port).
-It does not contain Mesa and does not build it yet — it pins down the one
-question that decides whether a PanVK port is even reachable from this machine:
-*can we cross-compile an ARM64 Windows binary here?*
-
-The answer is now measured. See **Status** below.
+It does not contain Mesa; `tools\fetch-mesa.ps1` pins it into the git-ignored
+`external\mesa`. It **does now build it**: as of 2026-11-09 this tree links a
+complete ARM64 Windows `vulkan_panfrost.dll` with no MSVC ARM64 CRT installed.
+See **Status** below.
 
 Nothing here touches the tablet, the KMD, or USB. Everything it writes stays
 inside the repository (`.venv\`, `build\`), and both are git-ignored.
@@ -22,7 +21,34 @@ inside the repository (`.venv\`, `build\`), and both are git-ignored.
 | Compile an ARM64 object | ✅ machine type `0xAA64` (ARM64) |
 | Archive a static library | ✅ `libmali_mesa_smoke.a` (via `llvm-ar`) |
 | **Link an ARM64 `.exe`/`.dll`** | ✅ C **and** C++ link now, via the CRT-free recipe + `runtime\` shim (below) |
-| Configure Mesa (panfrost) | ⚠️ gets past toolchain/Rust/atomics; stops at **CLC/LLVM** (below) |
+| Configure Mesa (panfrost) | ✅ pins `mesa-25.0.7`; configures with no CLC/LLVM |
+| **Link `vulkan_panfrost.dll` (ARM64)** | ✅ **11.7 MB**, `COFF-ARM64`, exports `vk_icdGetInstanceProcAddr` — see below |
+
+### Windows ARM64 PanVK links (2026-11-09)
+
+`tools\build-mesa.ps1` now produces:
+
+```
+windrv\mesa\build\mesa\src\panfrost\vulkan\vulkan_panfrost.dll   11,745,792 bytes
+```
+
+That is the whole stack of this tree exercised end-to-end: the Meson cross
+build, the libdrm/Win32 shim, the POSIX compat headers, the C++ runtime shim,
+and the CRT-free link recipe. Three things had to be added since the first
+configure:
+
+| Gap | Fix |
+| --- | --- |
+| `dep_libdrm` never found ⇒ `vk_drm_syncobj.c` not built, but PanVK calls `vk_drm_syncobj_*` | patch `0009` builds it unconditionally; its `drmSyncobj*` calls resolve against the shim |
+| `__chkstk`, `_tls_index` (from `vcruntime.lib`, not installed for ARM64) | `runtime/mali_aarch64.s` + `runtime/mali_win32os.cpp` |
+| `sysinfo`, `sched_yield`, `mprotect`, `dup`/`strdup`/`stricmp`, Windows cache-UUID, build-id | compat headers under `cross\compat\`, `runtime/mali_win32os.cpp`, `runtime/mali_posix.cpp`, patches `0007`/`0008` |
+
+**Caveat — v9 is not in this DLL.** The build covers Valhall **v6/v7** and
+**v10** (CSF). Upstream PanVK does not support Valhall **v9** (Mali-G57, this
+tablet's GPU); the JM backend is Bifrost-only. The two patches that would force
+a `libpanvk_v9` are parked in `patches\experimental\` and each fails deep in
+the Bifrost `RENDERER_STATE` draw path. So this DLL proves the *port* works; it
+does not yet drive this GPU. See `patches\experimental\README.md`.
 
 ### What the missing CRT actually blocks (measured 2026-11-09)
 
@@ -79,6 +105,10 @@ linker pulls only what a target needs:
 | `mali_cxxrt.cpp` | `operator new`/`delete` (+ array, sized, aligned, nothrow), `atexit` → UCRT `_crt_atexit`, `std::_Raise_handler` |
 | `mali_crt_exe.cpp` | `mainCRTStartup` (argv from `GetCommandLineA`, then `exit(main(...))`) |
 | `mali_crt_dll.cpp` | `_DllMainCRTStartup` → the library's `DllMain` if any |
+| `mali_posix.cpp` | POSIX spellings the UCRT only exports underscored (`read`, `write`, `open`… `dup`, `strdup`, `stricmp`) |
+| `mali_drm.cpp` | the libdrm-compatible shim over the KMD (device enumeration, BOs, ioctls, mmap, syncobjs) |
+| `mali_win32os.cpp` | Win32-backed Linux helpers: `sysinfo`, `sched_yield`, `_tls_index` |
+| `mali_aarch64.s` | `__chkstk` (arm64 stack-probe helper clang emits; normally in `vcruntime.lib`) |
 
 Two things make this work, and both are in Mesa already:
 
@@ -99,6 +129,12 @@ The resulting DLL imports **only UCRT API sets** — no `msvcp140.dll`, no
 `vcruntime140.dll` — so it stays self-contained on the target.
 
 ## First Mesa configure (2026-11-09): where it stops now
+
+> **Resolved.** This wall was the CLC/LLVM dependency of Mesa's `libpan`
+> CL kernels. It disappeared by pinning the checkout to **`mesa-25.0.7`**
+> (`tools\fetch-mesa.ps1`), the newest release whose PanVK predates that work.
+> The section is kept because it documents *why* the tree is pinned. Configure
+> now completes (patch list below), and `vulkan_panfrost.dll` links.
 
 `tools\setup.ps1` writes a cross file whose link recipe is the shim above
 (`-fuse-ld=lld`, `/nodefaultlib`, the SDK libs, the shim). With that, Meson's
@@ -145,16 +181,28 @@ is recorded in [`../GRAPHICS-STACK.md`](../GRAPHICS-STACK.md) and
 mesa/
   README.md                       this file
   cross/aarch64-windows-msvc.ini.in   Meson cross-file template (tokens, no machine paths)
+  cross/msvc-compat.h             force-included compat (atomics, asprintf, clock_gettime, …)
+  cross/arm64-msvc-atomic.h       clang <arm64intr.h> stand-in for the MSVC-target atomics probe
+  cross/compat/                   headers Windows lacks: sys/{mman,ioctl,ioccom,sysinfo,sysmacros}.h,
+                                  sched.h, unistd.h, poll.h, xf86drm.h (libdrm API subset)
   runtime/mali_cxxrt.cpp          C++ runtime shim: operator new/delete, atexit, _Raise_handler
   runtime/mali_crt_exe.cpp        mainCRTStartup
   runtime/mali_crt_dll.cpp        _DllMainCRTStartup
+  runtime/mali_posix.cpp          POSIX/oldnames aliases (read/write/dup/strdup/stricmp/…)
+  runtime/mali_drm.cpp            libdrm + libsyncobj + POSIX shim over the Mali KMD
+  runtime/mali_win32os.cpp        sysinfo / sched_yield / _tls_index
+  runtime/mali_aarch64.s          __chkstk
+  patches/*.patch                 portability patches, applied by tools/patch-mesa.ps1
+  patches/experimental/           v9-enable patches, deliberately NOT applied (see its README)
   smoke/meson.build, smoke/hello.c    trivial target: compile + archive an ARM64 lib
   smoke/link_probe.c, link_probe.cpp  the sources link-probe.ps1 measures with
   tools/setup.ps1                 venv + Meson + materialise build\cross.ini + readiness check
+  tools/fetch-mesa.ps1            shallow-clone upstream Mesa at the pinned tag into external\mesa
+  tools/patch-mesa.ps1            reset the checkout and apply patches\*.patch (idempotent)
+  tools/build-mesa.ps1            patch, configure, and compile Mesa → vulkan_panfrost.dll
   tools/build-runtime.ps1         build runtime\ + prove a C exe and an STL DLL link
   tools/link-probe.ps1            measure what each SDK library contributes to an ARM64 link
   tools/build-smoke.ps1           configure + build the smoke target
-  tools/fetch-mesa.ps1            shallow-clone upstream Mesa into external\mesa (+ pip reqs)
 ```
 
 Generated, git-ignored: `.venv\`, `build\`. Fetched source goes to `external\mesa\`.
@@ -165,9 +213,18 @@ Generated, git-ignored: `.venv\`, `build\`. Fetched source goes to `external\mes
 cd windrv\mesa
 .\tools\setup.ps1          # venv + Meson + cross.ini  (prints the readiness check)
 .\tools\build-runtime.ps1  # build the C++ runtime shim + prove exe/dll link
+.\tools\fetch-mesa.ps1     # pin upstream Mesa at the tag into external\mesa
+.\tools\patch-mesa.ps1     # reset the checkout and apply patches\*.patch
+.\tools\build-mesa.ps1     # patch + configure + compile → vulkan_panfrost.dll
 .\tools\link-probe.ps1     # show what each SDK library contributes to the link
 .\tools\build-smoke.ps1    # configure + compile + archive the ARM64 smoke lib
 ```
+
+`build-mesa.ps1` runs `patch-mesa.ps1` itself, and touches a fresh `meson setup`
+only when the cross file or the build graph changed (`-Reconfigure` to force).
+It also exports `LIB`/`INCLUDE` for the regeneration step: `meson setup`
+activates the MSVC environment, but `ninja`'s internal regenerate does not, and
+Mesa's `find_library('ws2_32')` fails without it.
 
 `setup.ps1` also *builds the shim* on first run, because the cross file links it
 by default. Pass `-SystemCrt` to fall back to the normal (installed) MSVC
@@ -193,18 +250,22 @@ accepts the same overrides (`-KitsRoot`, `-WdkRoot`, `-Clang`, `-Linker`).
 
 ## Next steps for Jalur B
 
-1. `tools\fetch-mesa.ps1` → `external\mesa`.
-2. Configure a **minimal, GL-disabled** Mesa (`-Dvulkan-drivers=panfrost`,
-   `-Dgallium-drivers=`, GL/GLX/EGL off) and check whether the source set is
-   C-only. If it is, the CRT issue disappears entirely (see the measurement
-   above) and we can link.
-3. If C++ turns out to be unavoidable, install the ARM64 CRT workload
-   (`libcpmt.lib`) — the "shim" is now known to be the C++ runtime itself, which
-   is not worth reimplementing by hand.
-4. Then record where Mesa's configure fails: expect the **Windows/DRM** gaps from
-   [`../PANVK-SHIM.md`](../PANVK-SHIM.md) (libdrm, `mmap`, `poll`, syncobj) long
-   before the shader compiler is reached.
-5. Build the Win32/DRM shim described in `PANVK-SHIM.md` §5.
+The build works. What is left is the GPU itself:
 
-The shader-compiler work (SPIR-V → Valhall) is real, but it is **not** the first
-wall — the Win32/DRM shim comes first. See `PANVK-SHIM.md`.
+1. **v9 is the wall now.** Upstream PanVK supports Valhall v6/v7 (JM, Bifrost
+   descriptors) and v10 (CSF), but not v9 (Mali-G57). `docs/drivers/panfrost.rst`
+   leaves the Vulkan column blank for G57, and `jm\panvk_vX_cmd_draw.c` hard-uses
+   Bifrost's `RENDERER_STATE`, which v9 genxml does not have. Options, in
+   `../GRAPHICS-STACK.md`:
+   - **OpenGL via Gallium Panfrost**, which *does* support v9 (`panfrost` Gallium
+     is the mainline v9 driver). This is the realizable hardware path.
+   - **Software Vulkan (lavapipe)** to carry VKD3D/DX12 without the GPU.
+   - **Write a Valhall-JM v9 Vulkan backend** — a new backend, not a port.
+2. Once a driver renders, **validate on the tablet**: install the ICD JSON, run
+   `windrv\umd\vulkan\test\mali_vk_smoke` / `vulkaninfo`, then `vkd3d`/`DXVK`.
+3. The `WDDM-PATH.md` work (render-only WDDM miniport, or a compute-accelerator
+   class driver) is what makes the GPU appear to Task Manager/DXGI; independent
+   of which userspace API the driver exposes.
+
+The shader-compiler work (SPIR-V → Valhall) is real; the Win32/DRM shim that
+used to come first is now written and exercised by the build.

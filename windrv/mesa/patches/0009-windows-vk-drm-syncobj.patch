@@ -1,0 +1,22 @@
+diff --git a/src/vulkan/runtime/meson.build b/src/vulkan/runtime/meson.build
+index 9d34ae43..5ed3a1b4 100644
+--- a/src/vulkan/runtime/meson.build
++++ b/src/vulkan/runtime/meson.build
+@@ -55,10 +55,16 @@ vulkan_lite_runtime_deps = [
+ ]
+ 
+ if dep_libdrm.found()
+-  vulkan_lite_runtime_files += files('vk_drm_syncobj.c')
+   vulkan_lite_runtime_deps += dep_libdrm
+ endif
+ 
++# vk_drm_syncobj.c sits behind dep_libdrm.found(), but this port's libdrm is the
++# project shim (windrv\mesa\runtime\mali_drm.cpp) linked through the CRT-free
++# recipe, not a Meson dependency, so dep_libdrm is never found and the file
++# would be dropped. PanVK's device and sync code calls vk_drm_syncobj_*
++# unconditionally, so build it; its drmSyncobj* calls resolve against the shim.
++vulkan_lite_runtime_files += files('vk_drm_syncobj.c')
++
+ if with_platform_android
+   vulkan_lite_runtime_files += files('vk_android.c')
+   vulkan_lite_runtime_deps += [dep_android, idep_u_gralloc]

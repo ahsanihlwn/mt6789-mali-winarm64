@@ -58,14 +58,37 @@ try {
     if ($vcArm64 -and (Test-Path -LiteralPath $vcArm64)) { $libpath += "/libpath:$vcArm64" }
 
     $cf = @('/clang:--target=aarch64-pc-windows-msvc', '/nologo', '/c', '/O2', '/std:c++17',
-            '/EHs-c-', '/GR-', '/D_HAS_EXCEPTIONS=0')
+            '/EHs-c-', '/GR-', '/D_HAS_EXCEPTIONS=0', '/MD')
+    $cfC = @('/clang:--target=aarch64-pc-windows-msvc', '/nologo', '/c', '/O2', '/MD')
+    $cfS = @('/clang:--target=aarch64-pc-windows-msvc', '/nologo', '/c')
+    # /MD matters even though we link /nodefaultlib + ucrt.lib/msvcurt.lib by hand:
+    # the UCRT headers emit #pragma detect_mismatch("RuntimeLibrary", ...), and a
+    # shim built /MT gets lld-link's /failifmismatch at the first Mesa DLL link
+    # (measured: "MT_StaticRelease" vs "MD_DynamicRelease"). We consume the DLL
+    # UCRT, so /MD is also the honest tag.
 
-    $sources  = @('mali_cxxrt.cpp', 'mali_crt_exe.cpp', 'mali_crt_dll.cpp')
+    # Include roots for the libdrm/Win32 shim: its own compat headers, the KMD
+    # ABI, the UMD winsys, and Mesa's drm-uapi headers.
+    $shimInc = @(
+        '-I', (Join-Path $mesaRoot 'cross\compat'),
+        '-I', (Join-Path $mesaRoot 'cross'),
+        '-I', (Join-Path $windrv 'kmd\include'),
+        '-I', (Join-Path $windrv 'umd\include'),
+        '-I', (Join-Path (Split-Path -Parent $windrv) 'external\mesa\include')
+    )
+
+    $sources  = @('mali_cxxrt.cpp', 'mali_posix.cpp', 'mali_crt_exe.cpp', 'mali_crt_dll.cpp',
+                  'mali_drm.cpp', 'mali_win32os.cpp', 'mali_umd.c', 'mali_aarch64.s')
     $objNames = @()
     foreach ($src in $sources) {
         $obj = Join-Path $out ([IO.Path]::GetFileNameWithoutExtension($src) + '.obj')
+        $srcPath = Join-Path $mesaRoot "runtime\$src"
+        if (-not (Test-Path -LiteralPath $srcPath)) { $srcPath = Join-Path $windrv "umd\src\$src" }
+        if ($src.EndsWith('.c'))      { $flags = $cfC }
+        elseif ($src.EndsWith('.s'))  { $flags = $cfS }
+        else                          { $flags = $cf }
         Write-Host ("compiling {0} (aarch64) ..." -f $src)
-        & $t.ClangCl ($cf + $inc + @("/Fo$obj", (Join-Path $mesaRoot "runtime\$src")))
+        & $t.ClangCl ($flags + $inc + $shimInc + @("/Fo$obj", $srcPath))
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $obj)) { throw ("compile failed: {0}" -f $src) }
         $objNames += $obj
     }
@@ -79,7 +102,8 @@ try {
     }
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $lib)) { throw 'shim archive failed' }
 
-    $crtLibs = @('ucrt.lib', 'BufferOverflow.lib', 'msvcurt.lib', 'kernel32.lib', 'ntdll.lib', $lib)
+    $crtLibs = @('ucrt.lib', 'BufferOverflow.lib', 'msvcurt.lib', 'kernel32.lib', 'ntdll.lib',
+                 'setupapi.lib', 'advapi32.lib', $lib)
 
     function Link([string]$label, [string[]]$objs, [string]$mode, [string]$name) {
         $outFile = Join-Path $out $name
@@ -105,7 +129,7 @@ try {
     $exeSrc = Join-Path $out 'crt_exe_proof.c'
     "int main(void) { return 0; }" | Set-Content -LiteralPath $exeSrc
     $exeObj = Join-Path $out 'crt_exe_proof.obj'
-    & $t.ClangCl (@('/clang:--target=aarch64-pc-windows-msvc', '/nologo', '/c', '/O2') + $inc + @("/Fo$exeObj", $exeSrc))
+    & $t.ClangCl (@('/clang:--target=aarch64-pc-windows-msvc', '/nologo', '/c', '/O2', '/MD') + $inc + @("/Fo$exeObj", $exeSrc))
     if ($LASTEXITCODE -ne 0) { throw 'exe proof compile failed' }
 
     # B. STL DLL: exercises operator new/delete, the STL support bits and DllMainCRTStartup.

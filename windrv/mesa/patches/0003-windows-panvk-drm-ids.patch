@@ -1,0 +1,27 @@
+diff --git a/src/panfrost/vulkan/panvk_physical_device.c b/src/panfrost/vulkan/panvk_physical_device.c
+index 373f084..0fdfcec 100644
+--- a/src/panfrost/vulkan/panvk_physical_device.c
++++ b/src/panfrost/vulkan/panvk_physical_device.c
+@@ -93,6 +93,14 @@ get_drm_device_ids(struct panvk_physical_device *device,
+                    const struct panvk_instance *instance,
+                    drmDevicePtr drm_device)
+ {
++#ifdef _WIN32
++   /* Windows has neither DRM render nodes nor device numbers. Our libdrm shim
++    * (windrv/mesa/runtime/mali_drm.cpp) exposes one synthetic render node whose
++    * path cannot be stat()ed, so return a stable synthetic rdev. Only the DRM
++    * WSI path code consumes render_rdev and this build is headless. */
++   device->drm.render_rdev = 1;
++   return VK_SUCCESS;
++#else
+    struct stat st;
+ 
+    if (stat(drm_device->nodes[DRM_NODE_RENDER], &st)) {
+@@ -112,6 +120,7 @@ get_drm_device_ids(struct panvk_physical_device *device,
+    }
+ 
+    return VK_SUCCESS;
++#endif
+ }
+ 
+ static int

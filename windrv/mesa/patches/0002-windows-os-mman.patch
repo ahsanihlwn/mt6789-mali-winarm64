@@ -1,0 +1,37 @@
+diff --git a/src/util/os_mman.h b/src/util/os_mman.h
+index 1567ee76..8f68d0f7 100644
+--- a/src/util/os_mman.h
++++ b/src/util/os_mman.h
+@@ -42,6 +42,13 @@
+ 
+ #if DETECT_OS_POSIX
+ #  include <sys/mman.h>
++#elif DETECT_OS_WINDOWS
++/* Windows has no <sys/mman.h>. The project's cross/compat/sys/mman.h declares
++ * the mmap/munmap entry points, implemented by windrv/mesa/runtime/mali_drm.cpp
++ * (which maps buffer objects already mapped by the Mali KMD). See
++ * windrv/PANVK-SHIM.md.
++ */
++#  include <sys/mman.h>
+ #else
+ #  error Unsupported OS
+ #endif
+@@ -59,6 +66,18 @@ extern "C" {
+ #  define os_munmap(addr, length) \
+              munmap(addr, length)
+ 
++#elif DETECT_OS_WINDOWS
++/* MSVC's off_t is 32-bit (long), so the AC_SYS_LARGEFILE assertion below does
++ * not describe this target and its (off_t)1 << 31 shifts are undefined.
++ * mali_drm.cpp's mmap() takes a long offset, matching off_t. */
++#  define os_mmap(addr, length, prot, flags, fd, offset) \
++             mmap(addr, length, prot, flags, fd, offset)
++
++static inline int os_munmap(void *addr, size_t length)
++{
++   return munmap(addr, length);
++}
++
+ #else
+ /* assume large file support exists */
+ #  define os_mmap(addr, length, prot, flags, fd, offset) \

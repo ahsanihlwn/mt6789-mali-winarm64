@@ -1,0 +1,28 @@
+diff --git a/src/panfrost/compiler/bifrost_compile.c b/src/panfrost/compiler/bifrost_compile.c
+index 4a2712c..e2d9522 100644
+--- a/src/panfrost/compiler/bifrost_compile.c
++++ b/src/panfrost/compiler/bifrost_compile.c
+@@ -149,10 +149,20 @@ bi_emit_jump(bi_builder *b, nir_jump_instr *instr)
+ static uint64_t
+ bi_index_to_key(bi_index idx)
+ {
+-   static_assert(sizeof(idx) <= sizeof(uint64_t), "too much padding");
+-
++   /* MSVC's bit-field layout differs from the Itanium ABI Mesa assumes, so
++    * sizeof(bi_index) is 12 rather than 8 here and the struct cannot be hashed
++    * with a single memcpy. Pack the fields explicitly instead. The exact bit
++    * positions do not matter: the key only has to be a deterministic function
++    * of the fields, so equal indices give equal keys.
++    */
+    uint64_t key = 0;
+-   memcpy(&key, &idx, sizeof(idx));
++   key |= (uint64_t)idx.value;
++   key |= (uint64_t)idx.abs     << 32;
++   key |= (uint64_t)idx.neg     << 33;
++   key |= (uint64_t)idx.discard << 34;
++   key |= (uint64_t)idx.swizzle << 35;
++   key |= (uint64_t)idx.offset  << 39;
++   key |= (uint64_t)idx.type    << 42;
+    return key;
+ }
+ 

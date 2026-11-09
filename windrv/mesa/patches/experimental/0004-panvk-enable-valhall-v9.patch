@@ -1,0 +1,22 @@
+diff --git a/src/panfrost/vulkan/meson.build b/src/panfrost/vulkan/meson.build
+index 93cc3653..6bec5222 100644
+--- a/src/panfrost/vulkan/meson.build
++++ b/src/panfrost/vulkan/meson.build
+@@ -62,7 +62,7 @@ valhall_archs = [9, 10]
+ valhall_inc_dir = ['valhall']
+ valhall_files = []
+ 
+-jm_archs = [6, 7]
++jm_archs = [6, 7, 9]
+ jm_inc_dir = ['jm']
+ jm_files = [
+   'jm/panvk_vX_cmd_buffer.c',
+@@ -110,7 +110,7 @@ common_per_arch_files = [
+   'panvk_vX_shader.c',
+ ]
+ 
+-foreach arch : [6, 7, 10]
++foreach arch : [6, 7, 9, 10]
+   per_arch_files = common_per_arch_files
+   inc_panvk_per_arch = []
+ 
