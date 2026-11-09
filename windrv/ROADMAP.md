@@ -179,8 +179,12 @@ usable:
 - [~] **Jalur B — render**: port Mesa `PanVK` to Windows ARM64.
   - [x] Build a Windows ARM64 PanVK: `vulkan_panfrost.dll` (11.7 MB) links with
     the CRT-free recipe + libdrm/POSIX shim (`mesa/README.md`, patches
-    `0001..0009`). DRM backend replaced by our IOCTL backend; no MSVC ARM64 CRT
-    needed.
+    `0001..0011`, 9 active). DRM backend replaced by our IOCTL backend; no MSVC
+    ARM64 CRT needed, and no VC++ redistributable dependency
+    (`VCRUNTIME140`/`MSVCP140` eliminated from all four DLLs).
+  - [x] Build the Gallium panfrost OpenGL pair: `libgallium_wgl.dll` (14.7 MB) +
+    `opengl32.dll` (115 KB), same recipe (`build-mesa.ps1 -Kind gl`). This is the
+    v9 render path; `z-1.dll` must ship alongside it.
   - [ ] **The v9 gap.** Upstream PanVK supports Valhall v6/v7 (Bifrost JM) and
     v10 (CSF), **not v9** (G57). So the linked DLL does not drive this GPU.
     Options (see [`GRAPHICS-STACK.md`](GRAPHICS-STACK.md) §2.2/§8):
@@ -226,6 +230,9 @@ usable:
   Microsoft-signed).
 - Package ICD manifest + DLL overrides so a user can install without a build
   toolchain.
+- [x] `tools\stage-testkit.ps1` collects the deployable set into `out\testkit\`
+      with a SHA-256 manifest, and [`DEPLOY.md`](DEPLOY.md) is the ordered
+      checklist (KMD → Jalur A ICD → Gallium panfrost GL → D3D overrides).
 
 **Signing (Windows 11 ARM64 full install)**
 - Dev: Secure Boot off + `bcdedit /set testsigning on`, self-signed driver.

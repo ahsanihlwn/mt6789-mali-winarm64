@@ -44,4 +44,27 @@
 typedef intptr_t ssize_t;
 #endif
 
+/*
+ * sysconf / _SC_* 
+ * ----------------
+ * panfrost's pan_mempool.c (PAN_DBG_OVERFLOW guard) and a few other Linux-only
+ * code paths ask for the system page size. Windows exposes it via
+ * GetSystemInfo, not sysconf; on ARM64 it is always 4 KiB. Only the values the
+ * build actually reaches are defined; the rest keep the default below.
+ */
+#ifndef _SC_PAGESIZE
+#define _SC_PAGESIZE 30
+#endif
+#ifndef _SC_PAGE_SIZE
+#define _SC_PAGE_SIZE _SC_PAGESIZE
+#endif
+
+#ifndef MALI_COMPAT_SYSCONF
+#define MALI_COMPAT_SYSCONF 1
+static inline long sysconf(int name)
+{
+    return name == _SC_PAGESIZE ? 4096 : -1;
+}
+#endif
+
 #endif /* MALI_COMPAT_UNISTD_H */

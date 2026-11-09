@@ -1,0 +1,20 @@
+﻿diff --git a/src/gallium/auxiliary/renderonly/renderonly.h b/src/gallium/auxiliary/renderonly/renderonly.h
+index de22b37c..6d6fbcc7 100644
+--- a/src/gallium/auxiliary/renderonly/renderonly.h
++++ b/src/gallium/auxiliary/renderonly/renderonly.h
+@@ -105,7 +105,15 @@ renderonly_get_handle(struct renderonly_scanout *scanout,
+       return false;
+ 
+    assert(handle->type == WINSYS_HANDLE_TYPE_KMS);
++#ifdef _WIN32
++   /* winsys_handle::handle is a HANDLE (void *) on Windows (winsys_handle.h),
++    * while renderonly_scanout::handle is the Linux-style uint32_t GEM handle.
++    * Panfrost never drives a KMS scanout on Windows, but panfrost_drm_winsys.c
++    * compiles this inline helper, so keep it type-correct. */
++   handle->handle = (HANDLE)(uintptr_t)scanout->handle;
++#else
+    handle->handle = scanout->handle;
++#endif
+    handle->stride = scanout->stride;
+ 
+    return true;

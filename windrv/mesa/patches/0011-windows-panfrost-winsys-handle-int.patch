@@ -1,0 +1,62 @@
+﻿diff --git a/src/gallium/drivers/panfrost/pan_resource.c b/src/gallium/drivers/panfrost/pan_resource.c
+index 52600b97..ccfe5728 100644
+--- a/src/gallium/drivers/panfrost/pan_resource.c
++++ b/src/gallium/drivers/panfrost/pan_resource.c
+@@ -54,6 +54,20 @@
+ #include "pan_tiling.h"
+ #include "pan_util.h"
+ 
++/*
++ * Windows: struct winsys_handle::handle is a HANDLE (void *) so the WGL and
++ * d3d12 frontends can carry NT handles (see frontend/winsys_handle.h).
++ * panfrost, however, passes Linux-style integer GEM handles / dma-buf fds
++ * through the same field, so convert at the boundary.  A no-op elsewhere.
++ */
++#ifdef _WIN32
++#define PAN_WHANDLE_TO_INT(h) ((int)(intptr_t)(h))
++#define PAN_INT_TO_WHANDLE(v) ((HANDLE)(intptr_t)(v))
++#else
++#define PAN_WHANDLE_TO_INT(h) (h)
++#define PAN_INT_TO_WHANDLE(v) (v)
++#endif
++
+ static void
+ panfrost_clear_depth_stencil(struct pipe_context *pipe,
+                              struct pipe_surface *dst, unsigned clear_flags,
+@@ -143,7 +157,7 @@ panfrost_resource_from_handle(struct pipe_screen *pscreen,
+       return NULL;
+    }
+ 
+-   rsc->bo = panfrost_bo_import(dev, whandle->handle);
++   rsc->bo = panfrost_bo_import(dev, PAN_WHANDLE_TO_INT(whandle->handle));
+    /* Sometimes an import can fail e.g. on an invalid buffer fd, out of
+     * memory space to mmap it etc.
+     */
+@@ -190,14 +204,14 @@ panfrost_resource_get_handle(struct pipe_screen *pscreen,
+    if (handle->type == WINSYS_HANDLE_TYPE_KMS && dev->ro) {
+       return renderonly_get_handle(scanout, handle);
+    } else if (handle->type == WINSYS_HANDLE_TYPE_KMS) {
+-      handle->handle = panfrost_bo_handle(rsrc->bo);
++      handle->handle = PAN_INT_TO_WHANDLE(panfrost_bo_handle(rsrc->bo));
+    } else if (handle->type == WINSYS_HANDLE_TYPE_FD) {
+       int fd = panfrost_bo_export(rsrc->bo);
+ 
+       if (fd < 0)
+          return false;
+ 
+-      handle->handle = fd;
++      handle->handle = PAN_INT_TO_WHANDLE(fd);
+    } else {
+       /* Other handle types not supported */
+       return false;
+@@ -829,8 +843,8 @@ panfrost_resource_create_with_modifier(struct pipe_screen *screen,
+          return NULL;
+       }
+       assert(handle.type == WINSYS_HANDLE_TYPE_FD);
+-      so->bo = panfrost_bo_import(dev, handle.handle);
+-      close(handle.handle);
++      so->bo = panfrost_bo_import(dev, PAN_WHANDLE_TO_INT(handle.handle));
++      close(PAN_WHANDLE_TO_INT(handle.handle));
+ 
+       if (!so->bo) {
+          FREE(so);

@@ -3,8 +3,9 @@
 This directory is the **build-toolchain side of Jalur B** (the Mesa PanVK port).
 It does not contain Mesa; `tools\fetch-mesa.ps1` pins it into the git-ignored
 `external\mesa`. It **does now build it**: as of 2026-11-09 this tree links a
-complete ARM64 Windows `vulkan_panfrost.dll` with no MSVC ARM64 CRT installed.
-See **Status** below.
+complete ARM64 Windows `vulkan_panfrost.dll`, plus the Gallium panfrost OpenGL
+pair `libgallium_wgl.dll` / `opengl32.dll`, with no MSVC ARM64 CRT installed and
+no VC++ redistributable dependency. See **Status** below.
 
 Nothing here touches the tablet, the KMD, or USB. Everything it writes stays
 inside the repository (`.venv\`, `build\`), and both are git-ignored.
@@ -23,6 +24,8 @@ inside the repository (`.venv\`, `build\`), and both are git-ignored.
 | **Link an ARM64 `.exe`/`.dll`** | ✅ C **and** C++ link now, via the CRT-free recipe + `runtime\` shim (below) |
 | Configure Mesa (panfrost) | ✅ pins `mesa-25.0.7`; configures with no CLC/LLVM |
 | **Link `vulkan_panfrost.dll` (ARM64)** | ✅ **11.7 MB**, `COFF-ARM64`, exports `vk_icdGetInstanceProcAddr` — see below |
+| **Link Gallium panfrost GL (ARM64)** | ✅ `libgallium_wgl.dll` **14.7 MB** + `opengl32.dll` 115 KB, `COFF-ARM64` |
+| **No VC++ runtime dependency** | ✅ all four DLLs import only in-box UCRT API sets + system DLLs (no `VCRUNTIME140`/`MSVCP140`) |
 
 ### Windows ARM64 PanVK links (2026-11-09)
 
@@ -89,16 +92,62 @@ That reframes Jalur B:
 Either way, executables can be *linked* here but not *run* here: the only ARM64
 machine is the tablet.
 
+### Removing the VCRUNTIME140 / MSVCP140 dependency (2026-11-09)
+
+`msvcurt.lib` is the OneCore **import** library. It satisfies the link, but some
+of its members are stubs that forward to `VCRUNTIME140.dll` / `MSVCP140.dll` —
+the VC++ redistributable, which is not guaranteed on a Windows 11 ARM64 install.
+Linking against it is therefore not the same as being self-contained. Measured
+with `llvm-readobj --coff-imports` on the tree's own outputs:
+
+| Symbol reached through | Why it matters |
+| --- | --- |
+| `memcpy`, `memset`, `memmove`, `memcmp`, `memchr`, `strchr`, `strrchr`, `strstr` | compiler intrinsics; `ucrt.lib` covers only some of them on ARM64 |
+| `_Mtx_lock`, `_Mtx_unlock` | `std::mutex` ABI (MSVCP140) |
+| `_Throw_Cpp_error`, `_Xlength_error` | STL `[[noreturn]]` helpers (MSVCP140) |
+| `std::_Raise_handler` | data import (MSVCP140) |
+| `longjmp`, `_setjmpex` | `setjmp`/SEH pair (VCRUNTIME140) |
+| `__CxxFrameHandler3` | C++ SEH frame cleanup (VCRUNTIME140) |
+
+The fix is to **own those symbols** instead of bundling the redistributable:
+
+1. `runtime\mali_vcrt.cpp` defines the `mem*`/`str*` set, `_Mtx_*`,
+   `std::_Xlength_error`, `std::_Throw_Cpp_error` (both `abort()`), built with
+   `-fno-builtin` so defining `memcpy` does not recurse into itself.
+2. `runtime\mali_aarch64.s` adds `_setjmpex` and `longjmp` against the ARM64
+   `_JUMP_BUFFER` layout (24 × u64: Frame, Reserved, X19–X28, Fp, Lr, Sp, Fpcr,
+   Fpsr, D8–D15).
+3. `runtime\mali_cxxrt.cpp` adds the data-import slot
+   `__imp_?_Raise_handler@std@@...` (via `__asm__`, since the name is not a
+   valid C++ identifier) holding the address of the definition.
+4. `std::mutex` is not emulated: `_Mtx_*` is implemented against the layout of
+   MSVC 14.50's `_Mtx_internal_imp_t` (80 B: `_Type`@0, the 64-B critical
+   section union @8, `_Thread_id`@72, `_Count`@76) with a zero-initialised
+   `SRWLOCK` stored inline. The constexpr constructor zero-inits, so no
+   `_Mtx_init_in_situ` call is needed.
+5. `/EHs-c-` is appended after Mesa's `/EHsc` in the cross file. Mesa compiles
+   with `_HAS_EXCEPTIONS=0` and contains no `throw`/`catch`; the flag only stops
+   clang from emitting `__CxxFrameHandler3` references.
+6. `mali_cxxrt.lib` is listed **first** on the link line. Both it and
+   `msvcurt.lib` define these symbols; the linker takes the first definition, so
+   first place is what makes the shim win over the forwarding stubs.
+
+Verification (`llvm-readobj --coff-imports`): `libgallium_wgl.dll`,
+`opengl32.dll`, `vulkan_panfrost.dll` and the shim proof DLL import **only**
+in-box UCRT API sets and system DLLs.
+
+One packaging consequence: `libgallium_wgl.dll` imports `crc32` from Mesa's zlib
+subproject, so **`z-1.dll` (106,496 B) must ship next to it**. That DLL is also
+in-box-UCRT-only.
+
 ## The shim (`runtime\`) — what it is and is not
 
 `runtime\` is the ARM64 C++ runtime the CRT-free recipe needs. It is **not** a
-libc++/STL port. Measured against `ucrt.lib + BufferOverflow.lib + msvcurt.lib +
-kernel32.lib + ntdll.lib`, with the STL compiled `_HAS_EXCEPTIONS=0 /GR-`, the
-only symbols missing were `atexit`, `std::_Raise_handler`, and
-`operator new`/`delete`. Everything else (`_Mtx_lock`, `std::_Xlength_error`,
-`std::_Throw_Cpp_error`, `__C_specific_handler`, ...) is already in
-`msvcurt.lib`. So the shim is small and split into three archive members so the
-linker pulls only what a target needs:
+libc++/STL port. It started as the handful of symbols `msvcurt.lib` does not
+provide at all (`atexit`, `std::_Raise_handler`, `operator new`/`delete`) and
+grew to own the symbols `msvcurt.lib` merely *forwards* to the VC++ runtime (see
+the section above). It is split into archive members so the linker pulls only
+what a target needs:
 
 | Member | Provides |
 | --- | --- |
@@ -108,15 +157,23 @@ linker pulls only what a target needs:
 | `mali_posix.cpp` | POSIX spellings the UCRT only exports underscored (`read`, `write`, `open`… `dup`, `strdup`, `stricmp`) |
 | `mali_drm.cpp` | the libdrm-compatible shim over the KMD (device enumeration, BOs, ioctls, mmap, syncobjs) |
 | `mali_win32os.cpp` | Win32-backed Linux helpers: `sysinfo`, `sched_yield`, `_tls_index` |
-| `mali_aarch64.s` | `__chkstk` (arm64 stack-probe helper clang emits; normally in `vcruntime.lib`) |
+| `mali_tls.cpp` | C++ thread-safe statics (the `__cxa_guard_*` equivalent) and thread-local storage init |
+| `mali_vcrt.cpp` | `mem*`/`str*` intrinsics, `_Mtx_*`, `std::_Xlength_error`, `std::_Throw_Cpp_error` |
+| `mali_aarch64.s` | `__chkstk`, `_setjmpex`/`longjmp` |
 
-Two things make this work, and both are in Mesa already:
+Those last four are what makes the result self-contained: they take over the
+symbols that `msvcurt.lib` would otherwise resolve by importing
+`VCRUNTIME140.dll` / `MSVCP140.dll`.
+
+Three things make this work, and all are in Mesa already:
 
 - Mesa compiles its C++ with `-D_HAS_EXCEPTIONS=0` (meson.build line 1359), so
   the STL never pulls the SEH exception machinery
-  (`__CxxFrameHandler3`, `_CxxThrowException`), which we do **not** implement.
+  (`__CxxFrameHandler3`, `_CxxThrowException`). `/EHs-c-` in the cross file
+  removes the remaining frame-handler reference from Mesa's own `/EHsc`.
 - `-Dcpp_rtti=false` keeps RTTI off, which also avoids `msvcurt.lib`'s broken
   `ti_inst.obj` (lld: *"should not refer to special section 0"*).
+- The shim archive is listed before `msvcurt.lib` so its definitions win.
 
 Prove it:
 
@@ -191,15 +248,20 @@ mesa/
   runtime/mali_posix.cpp          POSIX/oldnames aliases (read/write/dup/strdup/stricmp/…)
   runtime/mali_drm.cpp            libdrm + libsyncobj + POSIX shim over the Mali KMD
   runtime/mali_win32os.cpp        sysinfo / sched_yield / _tls_index
-  runtime/mali_aarch64.s          __chkstk
-  patches/*.patch                 portability patches, applied by tools/patch-mesa.ps1
+  runtime/mali_tls.cpp            C++ thread-safe statics + thread_local TLS guard
+  runtime/mali_vcrt.cpp           mem*/str*, _Mtx_*, _Xlength_error, _Throw_Cpp_error
+  runtime/mali_aarch64.s          __chkstk, _setjmpex / longjmp
+  patches/*.patch                 portability patches (currently 0001-0011, 0004/0006
+                                  skipped), applied by tools/patch-mesa.ps1
   patches/experimental/           v9-enable patches, deliberately NOT applied (see its README)
   smoke/meson.build, smoke/hello.c    trivial target: compile + archive an ARM64 lib
   smoke/link_probe.c, link_probe.cpp  the sources link-probe.ps1 measures with
   tools/setup.ps1                 venv + Meson + materialise build\cross.ini + readiness check
   tools/fetch-mesa.ps1            shallow-clone upstream Mesa at the pinned tag into external\mesa
+  tools/fetch-flexbison.ps1       vendor win_flex/win_bison into external\winflexbison (GL build)
   tools/patch-mesa.ps1            reset the checkout and apply patches\*.patch (idempotent)
-  tools/build-mesa.ps1            patch, configure, and compile Mesa → vulkan_panfrost.dll
+  tools/build-mesa.ps1            patch, configure, compile → Vulkan (`-Kind vulkan`) or
+                                  OpenGL (`-Kind gl`) DLLs
   tools/build-runtime.ps1         build runtime\ + prove a C exe and an STL DLL link
   tools/link-probe.ps1            measure what each SDK library contributes to an ARM64 link
   tools/build-smoke.ps1           configure + build the smoke target
@@ -215,13 +277,27 @@ cd windrv\mesa
 .\tools\build-runtime.ps1  # build the C++ runtime shim + prove exe/dll link
 .\tools\fetch-mesa.ps1     # pin upstream Mesa at the tag into external\mesa
 .\tools\patch-mesa.ps1     # reset the checkout and apply patches\*.patch
-.\tools\build-mesa.ps1     # patch + configure + compile → vulkan_panfrost.dll
+.\tools\build-mesa.ps1 -Kind vulkan   # patch + configure + compile → vulkan_panfrost.dll
+.\tools\fetch-flexbison.ps1           # GL only: vendor win_flex/win_bison (git-ignored)
+.\tools\build-mesa.ps1 -Kind gl       # → libgallium_wgl.dll + opengl32.dll
 .\tools\link-probe.ps1     # show what each SDK library contributes to the link
 .\tools\build-smoke.ps1    # configure + compile + archive the ARM64 smoke lib
 ```
 
-`build-mesa.ps1` runs `patch-mesa.ps1` itself, and touches a fresh `meson setup`
-only when the cross file or the build graph changed (`-Reconfigure` to force).
+`build-mesa.ps1` uses separate build directories per `-Kind`
+(`build\mesa` for Vulkan, `build\mesa-gl` for OpenGL) and runs `patch-mesa.ps1`
+itself. It wipes the build directory when `build\cross.ini` is newer than
+`build.ninja`, because `meson --reconfigure` silently ignores changes to
+`c_link_args` (which is where the shim order lives), and touches a fresh
+`meson setup` only when the cross file or the build graph changed
+(`-Reconfigure` to force). `-ConfigureOnly` stops after the configure, which is
+the fast way to check a new option or patch.
+
+The GL build needs `win_flex`/`win_bison` for Mesa's GLSL front-end.
+`fetch-flexbison.ps1` vendors winflexbison 2.5.25 into the git-ignored
+`external\winflexbison`; nothing is installed on the host. `build-mesa.ps1`
+also redirects `TEMP`/`TMP` into `build\tmp` for that step, because `win_flex`
+writes a scratch file into `%TEMP%` and intermittently fails to delete it.
 It also exports `LIB`/`INCLUDE` for the regeneration step: `meson setup`
 activates the MSVC environment, but `ninja`'s internal regenerate does not, and
 Mesa's `find_library('ws2_32')` fails without it.
@@ -258,7 +334,8 @@ The build works. What is left is the GPU itself:
    Bifrost's `RENDERER_STATE`, which v9 genxml does not have. Options, in
    `../GRAPHICS-STACK.md`:
    - **OpenGL via Gallium Panfrost**, which *does* support v9 (`panfrost` Gallium
-     is the mainline v9 driver). This is the realizable hardware path.
+     is the mainline v9 driver). This is the realizable hardware path, and it
+     now **builds**: `-Kind gl` produces `libgallium_wgl.dll` + `opengl32.dll`.
    - **Software Vulkan (lavapipe)** to carry VKD3D/DX12 without the GPU.
    - **Write a Valhall-JM v9 Vulkan backend** — a new backend, not a port.
 2. Once a driver renders, **validate on the tablet**: install the ICD JSON, run

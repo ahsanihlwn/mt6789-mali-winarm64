@@ -179,3 +179,22 @@ extern "C" int __cdecl atexit(void(__cdecl *fn)(void))
 namespace std {
 _Prhand _Raise_handler = nullptr;
 }
+
+/* ------------------------------------------------------------------------- */
+/* the data-import slot for std::_Raise_handler                              */
+/*                                                                           */
+/* <exception> declares _Raise_handler __declspec(dllimport), so every         */
+/* referencing C++ translation unit loads its address from the import slot     */
+/* __imp_?_Raise_handler@std@@... instead of naming the variable directly.     */
+/* That name cannot be spelled as a C++ identifier ('?' and '@'), so it is     */
+/* given an explicit assembler name with __asm__, and its contents are -- as a */
+/* data import slot must be -- the address of the definition above.            */
+/*                                                                           */
+/* Measured 2026-11-09: without this slot libgallium_wgl.dll still imports     */
+/* MSVCP140.dll for this one symbol (referenced by lower_precision.cpp.obj     */
+/* and texcompress_astc_luts.cpp.obj).                                         */
+/* ------------------------------------------------------------------------- */
+
+extern "C" void *mali_raise_handler_imp
+    __asm__("__imp_?_Raise_handler@std@@3P6AXAEBVexception@stdext@@@ZEA")
+    = (void *)&std::_Raise_handler;

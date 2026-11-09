@@ -28,7 +28,12 @@ param(
     [string]$Clang    = $env:MALI_CLANG,
     [string]$Linker   = $env:MALI_LINKER,
     [string]$Target   = 'aarch64-pc-windows-msvc',
+    # vulkan = PanVK (Jalur B, current); gl = Gallium panfrost OpenGL (the v9
+    # render path, since upstream PanVK has no v9 backend). Separate build dirs.
+    [ValidateSet('vulkan', 'gl')]
+    [string]$Kind = 'vulkan',
     [switch]$Reconfigure,
+    [switch]$ConfigureOnly,
     [int]$Jobs = 0
 )
 
@@ -37,7 +42,7 @@ $ErrorActionPreference = 'Continue'
 $mesaRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)  # windrv\mesa
 $windrv   = Split-Path -Parent $mesaRoot
 $srcDir   = Join-Path (Split-Path -Parent $windrv) 'external\mesa'
-$buildDir = Join-Path $mesaRoot 'build\mesa'
+$buildDir = Join-Path $mesaRoot ("build\mesa" + $(if ($Kind -eq 'gl') { '-gl' } else { '' }))
 $cross    = Join-Path $mesaRoot 'build\cross.ini'
 
 if (-not (Test-Path -LiteralPath $srcDir)) {
@@ -65,6 +70,26 @@ try {
     # Build-time environment.
     $env:PATH = "$llvmBin;$venvScripts;$env:PATH"
     $env:CCC_OVERRIDE_OPTIONS = "+--target=$Target"
+
+    # The GL build's GLSL front-end (src/compiler/glsl) generates its lexer and
+    # parser and Mesa prefers winflexbison on Windows. tools\fetch-flexbison.ps1
+    # vendors win_flex/win_bison into external\ (git-ignored); find them by name.
+    $flexBison = Join-Path (Split-Path -Parent $windrv) 'external\winflexbison'
+    if (Test-Path -LiteralPath (Join-Path $flexBison 'win_flex.exe')) {
+        $env:PATH = "$flexBison;$env:PATH"
+    } elseif ($Kind -eq 'gl') {
+        throw 'GL builds need win_flex/win_bison. Run tools\fetch-flexbison.ps1 first.'
+    }
+
+    # win_flex writes a scratch file into %TEMP% and deletes it afterwards. With
+    # this host's user TEMP that intermittently fails
+    # ("win_flex.exe: error deleting file ...~flex_out_main_2") and ninja then
+    # treats the generation as failed. A project-local TEMP is reliable and
+    # keeps build byproducts inside the repo.
+    $tmpDir = Join-Path $mesaRoot 'build\tmp'
+    New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+    $env:TEMP = $tmpDir
+    $env:TMP  = $tmpDir
 
     # Meson's `setup` activates the Visual Studio environment, but neither
     # `ninja` nor Meson's internal `--internal regenerate` step does. Without
@@ -96,29 +121,47 @@ try {
         Remove-Item -Recurse -Force $buildDir
     }
 
-    # Minimal Vulkan-only, no-LLVM panfrost configuration (see README.md).
-    $opts = @(
-        '--cross-file', 'build\cross.ini',
-        '-Dvulkan-drivers=panfrost',
-        '-Dgallium-drivers=',
-        # Mesa's Windows platform (WSI only). The Unix "headless" WSI does
-        # not build for MSVC (uses dma_buf/drm_modifier/clock_gettime), and
-        # the Vulkan runtime needs VK_USE_PLATFORM_WIN32_KHR anyway. No
-        # display driver, no WDDM; display stays on GOP.
-        '-Dplatforms=windows',
-        '-Dglx=disabled',
-        '-Dgbm=disabled',
-        '-Dtools=',
-        '-Dbuild-tests=false',
-        '-Dopengl=false',
-        '-Dllvm=disabled',
-        '-Dcpp_rtti=false',
-        # xmlconfig.c includes <unistd.h>/<dirent.h>/<sys/stat.h> whenever
-        # WITH_XMLCONFIG=1; those do not exist for MSVC/ARM64. Mesa supports
-        # compiling without it (hardcoded default driconf), which is fine for
-        # PanVK. Revisit if a driver needs runtime driconf files.
-        '-Dxmlconfig=disabled'
-    )
+    # Minimal, no-LLVM panfrost configurations (see README.md).
+    #
+    #   vulkan : PanVK ICD only (current Jalur B target)
+    #   gl     : Gallium panfrost OpenGL (opengl32.dll / libgallium_wgl.dll).
+    #            This is the v9 render path: mainline Gallium panfrost supports
+    #            Valhall v9, while upstream PanVK does not.
+    #
+    # Both use Mesa's Windows platform (WSI only): no display driver, no WDDM,
+    # display stays on GOP.
+    if ($Kind -eq 'gl') {
+        $opts = @(
+            '--cross-file', 'build\cross.ini',
+            '-Dvulkan-drivers=',
+            '-Dgallium-drivers=panfrost',
+            '-Dplatforms=windows',
+            '-Dglx=disabled',
+            '-Degl=disabled',
+            '-Dgbm=disabled',
+            '-Dopengl=true',
+            '-Dtools=',
+            '-Dbuild-tests=false',
+            '-Dllvm=disabled',
+            '-Dcpp_rtti=false',
+            '-Dxmlconfig=disabled'
+        )
+    } else {
+        $opts = @(
+            '--cross-file', 'build\cross.ini',
+            '-Dvulkan-drivers=panfrost',
+            '-Dgallium-drivers=',
+            '-Dplatforms=windows',
+            '-Dglx=disabled',
+            '-Dgbm=disabled',
+            '-Dtools=',
+            '-Dbuild-tests=false',
+            '-Dopengl=false',
+            '-Dllvm=disabled',
+            '-Dcpp_rtti=false',
+            '-Dxmlconfig=disabled'
+        )
+    }
 
     # Meson caches the cross file's built-in options (c_link_args) in coredata
     # and `setup --reconfigure` does not pick up changes to them, which
@@ -132,9 +175,15 @@ try {
     }
 
     if (-not (Test-Path -LiteralPath $ninjaFile)) {
-        Write-Host 'meson setup ...'
+        Write-Host ("meson setup ({0}) ..." -f $Kind)
         & $meson setup $buildDir $srcDir @opts
         if ($LASTEXITCODE -ne 0) { throw 'meson setup failed' }
+    }
+
+    if ($ConfigureOnly) {
+        Write-Host ''
+        Write-Host ("MESA CONFIGURE ({0}): OK" -f $Kind) -ForegroundColor Green
+        exit 0
     }
 
     Write-Host 'meson compile ...'
@@ -146,7 +195,9 @@ try {
     Write-Host ''
     if ($rc -eq 0) {
         Write-Host 'MESA BUILD: PASS' -ForegroundColor Green
-        $dll = Get-ChildItem $buildDir -Recurse -Filter '*panfrost*.dll' -ErrorAction SilentlyContinue | Select-Object -First 3
+        $dll = Get-ChildItem $buildDir -Recurse -Include '*.dll' -ErrorAction SilentlyContinue |
+               Where-Object { $_.Name -match 'panfrost|gallium|opengl32' } |
+               Sort-Object Name | Select-Object -First 8
         foreach ($d in $dll) { Write-Host ("  {0}  ({1} bytes)" -f $d.FullName, $d.Length) }
     } else {
         Write-Host ("MESA BUILD: FAIL (exit {0})" -f $rc) -ForegroundColor Red

@@ -6,6 +6,11 @@
     mali_cxxrt.cpp     operator new/delete, atexit, std::_Raise_handler
     mali_crt_exe.cpp   mainCRTStartup   (executables)
     mali_crt_dll.cpp   DllMainCRTStartup (shared libraries)
+    mali_tls.cpp       C++ thread-safe statics + thread_local TLS guard
+                       (the vcruntime.lib pieces clang emits)
+    mali_vcrt.cpp      mem*/str* intrinsics, std::mutex (_Mtx_*), the STL
+                       [[noreturn]] shims: keeps VCRUNTIME140/MSVCP140 out
+    mali_aarch64.s     __chkstk, _setjmpex/longjmp
 
   It also *proves* the result by linking, against
   ucrt.lib + BufferOverflow.lib + msvcurt.lib + kernel32.lib + ntdll.lib +
@@ -58,8 +63,9 @@ try {
     if ($vcArm64 -and (Test-Path -LiteralPath $vcArm64)) { $libpath += "/libpath:$vcArm64" }
 
     $cf = @('/clang:--target=aarch64-pc-windows-msvc', '/nologo', '/c', '/O2', '/std:c++17',
-            '/EHs-c-', '/GR-', '/D_HAS_EXCEPTIONS=0', '/MD')
-    $cfC = @('/clang:--target=aarch64-pc-windows-msvc', '/nologo', '/c', '/O2', '/MD')
+            '/EHs-c-', '/GR-', '/D_HAS_EXCEPTIONS=0', '/MD', '/clang:-fno-builtin')
+    $cfC = @('/clang:--target=aarch64-pc-windows-msvc', '/nologo', '/c', '/O2', '/MD',
+             '/clang:-fno-builtin')
     $cfS = @('/clang:--target=aarch64-pc-windows-msvc', '/nologo', '/c')
     # /MD matters even though we link /nodefaultlib + ucrt.lib/msvcurt.lib by hand:
     # the UCRT headers emit #pragma detect_mismatch("RuntimeLibrary", ...), and a
@@ -78,7 +84,8 @@ try {
     )
 
     $sources  = @('mali_cxxrt.cpp', 'mali_posix.cpp', 'mali_crt_exe.cpp', 'mali_crt_dll.cpp',
-                  'mali_drm.cpp', 'mali_win32os.cpp', 'mali_umd.c', 'mali_aarch64.s')
+                  'mali_drm.cpp', 'mali_win32os.cpp', 'mali_tls.cpp', 'mali_vcrt.cpp',
+                  'mali_umd.c', 'mali_aarch64.s')
     $objNames = @()
     foreach ($src in $sources) {
         $obj = Join-Path $out ([IO.Path]::GetFileNameWithoutExtension($src) + '.obj')
@@ -102,8 +109,12 @@ try {
     }
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $lib)) { throw 'shim archive failed' }
 
-    $crtLibs = @('ucrt.lib', 'BufferOverflow.lib', 'msvcurt.lib', 'kernel32.lib', 'ntdll.lib',
-                 'setupapi.lib', 'advapi32.lib', $lib)
+    # The shim comes *first* on purpose: for the handful of symbols it defines
+    # (memcpy/strchr..., _Mtx_*, _setjmpex/longjmp) msvcurt.lib would otherwise
+    # win and redirect them at VCRUNTIME140.dll / MSVCP140.dll, which are not
+    # reliably present on Windows 11 ARM64.  See runtime\mali_vcrt.cpp.
+    $crtLibs = @($lib, 'ucrt.lib', 'BufferOverflow.lib', 'msvcurt.lib', 'kernel32.lib',
+                 'ntdll.lib', 'setupapi.lib', 'advapi32.lib')
 
     function Link([string]$label, [string[]]$objs, [string]$mode, [string]$name) {
         $outFile = Join-Path $out $name

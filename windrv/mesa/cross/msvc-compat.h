@@ -141,6 +141,11 @@ typedef struct {
     volatile long locked;
 } pthread_mutex_t;
 
+/* Static initialiser, as used by Mesa's src/util/u_atomic.c. */
+#ifndef PTHREAD_MUTEX_INITIALIZER
+#define PTHREAD_MUTEX_INITIALIZER { 0 }
+#endif
+
 static inline int pthread_mutex_init(pthread_mutex_t *m, const void *attr)
 {
     (void)attr;
@@ -176,6 +181,37 @@ static inline int pthread_mutex_unlock(pthread_mutex_t *m)
 }
 
 #endif /* MALI_PTHREAD_MUTEX_DEFINED */
+
+/*
+ * float16_t: clang's <arm_neon.h> vs Mesa's C++ helper
+ * ---------------------------------------------------
+ * On ARM64 the UCRT's <wchar.h> does:
+ *
+ *     #if defined(__clang__) && (defined(_M_ARM64) || defined(_M_ARM64EC))
+ *     #include <arm_neon.h>
+ *     #endif
+ *
+ * and clang's arm_vector_types.h typedefs `float16_t` as __fp16 in the global
+ * namespace. Mesa's src/util/half_float.h defines a *C++ helper struct* with
+ * the same name (fp16 vs uint16_t overload disambiguation), so any TU that
+ * pulls in <vector>/<wchar.h> before half_float.h fails with
+ *
+ *     error: typedef redefinition with different types ('__fp16' vs 'float16_t')
+ *     error: invalid vector element type 'float16_t'
+ *
+ * Mesa never uses NEON intrinsics and the two types are unrelated. Parse
+ * <arm_neon.h> once here and then rename the identifier: #define is not
+ * retroactive, so the NEON typedefs and inline functions are already complete,
+ * while every later use in Mesa -- the struct, its constructors, ir.h,
+ * builtin_functions.cpp, ast_to_hir.cpp -- consistently becomes
+ * mesa_float16_t. Doing it in the force-include keeps every TU consistent
+ * (identical type names across objects, no ODR surprises), and the UCRT's own
+ * later #include <arm_neon.h> is a no-op thanks to its __ARM_NEON_H guard.
+ */
+#if (defined(__aarch64__) || defined(_M_ARM64)) && !defined(MALI_NO_FLOAT16_RENAME)
+#include <arm_neon.h>
+#define float16_t mesa_float16_t
+#endif
 
 #endif /* _MSC_VER */
 

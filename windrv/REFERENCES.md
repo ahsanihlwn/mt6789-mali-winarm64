@@ -73,6 +73,14 @@ kode proyek tetap ditulis sendiri di dalam `windrv\`.
   <https://learn.microsoft.com/en-us/windows/win32/debug/pe-format#tls-directory>
   Dipakai untuk menjelaskan mengapa mendefinisikan `_tls_index` cukup
   (`mali_win32os.cpp`).
+- **microsoft/STL** — <https://github.com/microsoft/STL>
+  Definisi resmi `_Mtx_internal_imp_t` (`stl/inc/mutex`) dan `_Raise_handler`
+  (`stl/inc/exception`). Dipakai untuk menulis `_Mtx_*` dan slot
+  `__imp_?_Raise_handler@std@@...` di `runtime/mali_vcrt.cpp` /
+  `runtime/mali_cxxrt.cpp` terhadap ABI MSVC 14.50 (VS 18) yang terpasang.
+- **ARM64 `setjmp`/`_JUMP_BUFFER` (UCRT `setjmp.h`)** — layout 24 × u64
+  (Frame, Reserved, X19–X28, Fp, Lr, Sp, Fpcr, Fpsr, D8–D15) yang dipakai
+  `_setjmpex`/`longjmp` di `runtime/mali_aarch64.s`.
 
 ## 3. Paper & arsitektur
 
@@ -91,6 +99,11 @@ kode proyek tetap ditulis sendiri di dalam `windrv\`.
   Toolchain yang sudah dipakai proyek ini: `clang --target=aarch64-pc-windows-msvc`,
   `clang-cl`, `lld-link` (tanpa perlu install MSVC). Juga relevan nanti untuk
   build Mesa/NIR/SPIR-V dan backend shader.
+- **winflexbison (win_flex / win_bison)** — <https://github.com/lexxmark/winflexbison>
+  Flex/Bison untuk Windows. Dipakai build GL Mesa (GLSL front-end) karena
+  `-Dplatforms=windows` memilihnya; di-vendor ke `external/winflexbison`
+  (git-ignored) oleh `mesa/tools/fetch-flexbison.ps1` (2.5.25), bukan instalasi
+  host.
 
 ## 4. Vendor / resmi
 - **Mali GPU kbase register map & driver** — `mali_kbase_gpu_regmap.h`,
@@ -155,3 +168,5 @@ Dipakai untuk [`DISPLAY-ANDROID.md`](DISPLAY-ANDROID.md) dan
 | Vendor kernel tree | Angka power/clock/MTCMOS/register yang pasti untuk MT6789 |
 | DRM/KMS + dma-buf + MediaTek DRM | Model buffer bersama dan pipeline display yang mau dipetakan ke WDDM |
 | KMDOD / D3D11 UMD / D3D12 UMD | Kerangka kerja saat menulis driver Windows (L3/L4) |
+| microsoft/STL + UCRT `setjmp.h` | Menulis `_Mtx_*` dan `_setjmpex`/`longjmp` sesuai ABI ARM64/MSVC |
+| winflexbison | Prasyarat build GL Mesa, di-vendor bukan di-install |

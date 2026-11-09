@@ -111,6 +111,13 @@ try {
     if (-not $SystemCrt) {
         # CRT-free recipe: the SDK's dynamic UCRT + GS cookie + msvcurt + our
         # small C++ runtime shim, instead of the missing vcruntime/libcmt/libcpmt.
+        #
+        # The shim is listed first on purpose.  msvcurt.lib is the OneCore
+        # vcruntime import library, and for a handful of symbols it redirects at
+        # VCRUNTIME140.dll / MSVCP140.dll -- which are not reliably present on
+        # Windows 11 ARM64.  Those symbols (mem*/str* intrinsics, std::mutex's
+        # _Mtx_*, the STL [[noreturn]] shims, _setjmpex/longjmp) are owned by the
+        # shim; listing it first makes the linker prefer them.
         $shimLib = Join-Path $build 'runtime\mali_cxxrt.lib'
         if (-not (Test-Path -LiteralPath $shimLib)) {
             Write-Host 'Building the ARM64 C++ runtime shim (build-runtime.ps1) ...'
@@ -118,10 +125,17 @@ try {
             if (-not (Test-Path -LiteralPath $shimLib)) { throw 'runtime shim build failed' }
         }
         $linkArgs += @('/nodefaultlib',
+                       $shimLib,
                        'ucrt.lib', 'BufferOverflow.lib', 'msvcurt.lib', 'kernel32.lib', 'ntdll.lib',
-                       'setupapi.lib', 'advapi32.lib',
-                       $shimLib)
+                       'setupapi.lib', 'advapi32.lib')
     }
+
+    # C++ additionally builds with exceptions disabled. Mesa's Windows builds add
+    # /EHsc, which makes clang emit SEH frames referencing __CxxFrameHandler3 --
+    # a vcruntime140.dll export this project does not depend on. Mesa compiles
+    # with _HAS_EXCEPTIONS=0 and contains no throw/catch, so /EHs-c- (last wins
+    # over the earlier /EHsc) removes the reference without changing behaviour.
+    $cppArgs = $cArgs + '/EHs-c-'
 
     $tpl  = Get-Content -Raw -LiteralPath (Join-Path $mesaRoot 'cross\aarch64-windows-msvc.ini.in')
     $map  = @{
@@ -129,7 +143,7 @@ try {
         '@LLVM_AR@'        = To-Fwd $llvmAr
         '@LLVM_RC@'        = To-Fwd $llvmRc
         '@C_ARGS@'         = Q $cArgs
-        '@CPP_ARGS@'       = Q $cArgs
+        '@CPP_ARGS@'       = Q $cppArgs
         '@C_LINK_ARGS@'    = Q $linkArgs
         '@CPP_LINK_ARGS@'  = Q $linkArgs
     }

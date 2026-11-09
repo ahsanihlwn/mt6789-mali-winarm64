@@ -157,19 +157,40 @@ memasang runtime MSVC ARM64**.
 Tembok CRT **sudah dilewati**: yang hilang cuma runtime C++, dan itu diganti
 shim kecil kita sendiri (`mesa/runtime/` — `operator new/delete`, `atexit`,
 `_Raise_handler`, `mainCRTStartup`, `_DllMainCRTStartup`, `mali_drm.cpp`,
-`mali_posix.cpp`, `mali_win32os.cpp`, `mali_aarch64.s`), ditambah resep link
-CRT-free (`ucrt.lib` dinamis + `BufferOverflow.lib` + `msvcurt.lib` +
-`kernel32.lib` + `ntdll.lib`, `-fuse-ld=lld`, `/nodefaultlib`). Terbukti: `.exe`
-C dan `.dll` ber-STL menaut hanya ke apiset UCRT — tanpa
-`msvcp140.dll`/`vcruntime140.dll`.
+`mali_posix.cpp`, `mali_win32os.cpp`, `mali_tls.cpp`, `mali_vcrt.cpp`,
+`mali_aarch64.s`), ditambah resep link CRT-free (`ucrt.lib` dinamis +
+`BufferOverflow.lib` + `msvcurt.lib` + `kernel32.lib` + `ntdll.lib`,
+`-fuse-ld=lld`, `/nodefaultlib`).
+
+**Tanpa dependensi VC++ redistributable.** Sejak 2026-11-09 shim juga mengambil
+alih simbol yang `msvcurt.lib` cuma **teruskan** ke `VCRUNTIME140.dll`/
+`MSVCP140.dll` — `mem*`/`str*` intrinsics, `_Mtx_lock`/`_Mtx_unlock`,
+`_Throw_Cpp_error`, `_Xlength_error`, `_Raise_handler`, `longjmp`, `_setjmpex`,
+dan `__CxxFrameHandler3`. Mekanismenya: `_Mtx_*` ditulis terhadap layout
+`_Mtx_internal_imp_t` MSVC 14.50 (SRWLOCK inline di offset 8), `_setjmpex` /
+`longjmp` ditulis di `mali_aarch64.s` mengikuti layout `_JUMP_BUFFER` ARM64,
+`_Raise_handler` diberi slot data-import `__imp_...`, `/EHs-c-` mematikan frame
+handler SEH dari `/EHsc` bawaan Mesa, dan `mali_cxxrt.lib` diletakkan **pertama**
+di baris link supaya definisinya menang atas stub `msvcurt.lib`. Diverifikasi
+dengan `llvm-readobj --coff-imports`: keempat DLL hanya mengimpor apiset UCRT
+in-box + system DLL.
+
+Satu konsekuensi packaging: `libgallium_wgl.dll` mengimpor `crc32` dari zlib
+subproject Mesa, jadi **`z-1.dll` (106 KB) wajib ikut** di sampingnya.
+
+**OpenGL juga sudah di-link** (target render v9 yang realistis):
+`tools\build-mesa.ps1 -Kind gl` menghasilkan `libgallium_wgl.dll` (14.7 MB) +
+`opengl32.dll` (115 KB), `COFF-ARM64`, juga tanpa dependensi VC++ runtime.
 
 Tembok CLC/LLVM juga **sudah dilewati**: checkout di-pin ke **`mesa-25.0.7`**
 (versi terbaru yang PanVK-nya belum butuh CLC), dan patch portabilitas
-`windrv/mesa/patches/0001..0009` menutup sisa celah Windows — libdrm + `mmap`/
-`poll`/syncobj, `sysinfo`, `sched_yield`, `__chkstk`, `_tls_index`, build-id +
-cache-UUID, `vk_image.drm_format_mod`, dan `vk_drm_syncobj.c` (yang di Mesa hanya
-di-build bila `dep_libdrm` ditemukan). Semua patch di-reset + apply ulang oleh
-`tools/patch-mesa.ps1`; tidak ada edit Mesa tangan yang tersisa.
+`windrv/mesa/patches/0001..0011` (9 aktif; `0004`/`0006` diparkir) menutup sisa
+celah Windows — libdrm + `mmap`/`poll`/syncobj, `sysinfo`, `sched_yield`,
+`__chkstk`, `_tls_index`, build-id + cache-UUID, `vk_image.drm_format_mod`,
+`vk_drm_syncobj.c` (yang di Mesa hanya di-build bila `dep_libdrm` ditemukan),
+serta HANDLE renderonly/panfrost winsys (`0010`/`0011`). Semua patch di-reset +
+apply ulang oleh `tools/patch-mesa.ps1`; tidak ada edit Mesa tangan yang
+tersisa.
 
 **Tembok sebenarnya sekarang: Valhall v9.** Build di atas menghasilkan backend
 **v6/v7 (JM, Bifrost) + v10 (CSF)**, sedangkan **PanVK upstream belum mendukung
@@ -236,6 +257,10 @@ datang hampir otomatis**. Ini alasan urutan: Vulkan dulu, OpenGL menyusul.
 > urutan realistis bisa **terbalik**: GL lewat Gallium panfrost dulu (render
 > nyata di GPU), Zink/Vulkan menyusul bila backend v9 ditulis. Keputusan ini
 > ada di §8 dan `ROADMAP.md`.
+>
+> Status 2026-11-09: jalur Gallium panfrost itu **sudah di-link** —
+> `tools\build-mesa.ps1 -Kind gl` → `libgallium_wgl.dll` + `opengl32.dll`
+> (ARM64, UCRT in-box saja). Yang belum: winsys DRM → KMD dan WSI untuk present.
 
 ### 3.2 Yang perlu disiapkan
 
