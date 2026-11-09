@@ -116,23 +116,24 @@ usable:
   type/attr/AF/RW bits verified against `mali_kbase_mmu_mode_aarch64.c`, fault
   status readback. Page-table creation is race-safe.
   **Address mode: `ADRMODE_IDENTITY` by default** (`MALI_MMU_USE_PAGE_TABLES` in
-  `include/mali_mmu.h` flips to `ADRMODE_AARCH64_4K`). Rationale: BOs are
-  identity mapped, so the table buys nothing today, and on silicon the AArch64
-  table path raised `AS_FAULTSTATUS=0x7C0002C0` (translation fault, read) on the
-  first descriptor fetch even though `TRANSTAB`, `MEMATTR` and `TRANSCFG` read
-  back correctly; `IDENTITY` completes the same job in 0 ms.
-  Two fixes landed afterwards, both confined to the disabled table path:
-  (a) `MaliMmuEnable` used to hard-code `ADRMODE_IDENTITY` and never consulted
-  `UsePageTables` — that is why flipping the macro never changed `TRANSCFG`;
-  it now selects `AARCH64_4K` when the flag is set. (b) Page-table pages are now
-  allocated `MmNonCached` first (cached only as a fallback), so PTE stores reach
-  DRAM before the walker reads them instead of relying on CPU/GPU coherency;
-  `AS_MEMATTR` index 5 is `NON_CACHEABLE` (0x4C) per the vendor regmap. The
-  >4 GB suspect is probably not the cause (BOs use the same 40-bit bound and
-  work). Still unvalidated on silicon: try `MALI_MMU_USE_PAGE_TABLES 1` on the
-  tablet and read `MMU Enable - AARCH64_4K mode Transcfg=0x...` in the log.
+  `include/mali_mmu.h` flips to `ADRMODE_AARCH64_4K`). Identity still ships on
+  `main` because every BO is identity mapped, so the table buys nothing yet —
+  but the table path itself is now **proven on silicon** (`MaliKmdPt` built with
+  `-UsePageTables`: `chain cleared 2/2`, `JS_STATUS 0`, `AS_FAULTSTATUS 0`,
+  reproducible; driver `IOCTL_MALI_JOB_SUBMIT` also clean). Two independent bugs
+  had to be fixed, both recorded in `MMU-PAGE-TABLES.md`:
+  (a) `PTE_TABLE` was `1` (a block/huge-page descriptor, illegal at level 0);
+  the vendor `entry_set_pte()` uses `ENTRY_IS_PTE = 3`, which is also the
+  bottom-level 4K page value. That produced `AS_FAULTSTATUS=0x7C0002C0`.
+  (b) `AS_TRANSCFG_PTW_SH_OS` was set unconditionally. kbase only sets it when
+  `system_coherency != COHERENCY_NONE`; MT6789 is non-coherent, so the PTW read
+  went into a shareability domain the GPU's interconnect does not service and
+  the first descriptor never arrived. With `PTW_SH = 0` the value is
+  `0x42000006` and the walk works. `MALI_MMU_PTW_SH_OS` (default 0) guards it.
+  Also fixed earlier: `MaliMmuEnable` hard-coded `ADRMODE_IDENTITY` and ignored
+  `UsePageTables`, and table pages are allocated `MmNonCached` first.
   Per-page cache attributes will be needed for peak throughput, so this must be
-  fixed before performance work.
+  revisited before performance work.
 - [x] **Core power**: shader/tiler/L2 `PRESENT -> PWRON -> poll READY`, after
   MTCMOS; `SHADER_PRESENT` offset corrected (`0x100`, was wrongly `0x2C0`).
 - [x] **GPU soft reset on power-up**, matching `kbase_pm_do_reset`: after MTCMOS
@@ -224,8 +225,9 @@ usable:
 **Phase 5 — WDDM render-only adapter (Windows sees a GPU)** — *planned, see
 [`WDDM-PATH.md`](WDDM-PATH.md)*
 - [ ] ACPI node for the GPU + real interrupt lines (shared work with Phase 2g).
-- [ ] Page tables / multi-AS / non-contiguous allocations (Phase 2e follow-up) —
-      VidMm will not hand out physically contiguous memory.
+- [ ] Multi-AS / non-contiguous allocations (Phase 2e follow-up) — VidMm will
+      not hand out physically contiguous memory. (Page tables themselves are
+      done and validated: see [`MMU-PAGE-TABLES.md`](MMU-PAGE-TABLES.md).)
 - [ ] Render-only WDDM miniport (`NumOfChildren = 0`, no display outputs) so
       DXGI enumerates Mali and Task Manager shows a GPU row. Scanout stays on
       BDA; no display/DSI/MDP work.

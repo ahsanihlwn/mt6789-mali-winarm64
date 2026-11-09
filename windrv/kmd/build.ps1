@@ -33,7 +33,14 @@ param(
     [string]$Linker      = $env:MALI_LINKER,
     [string]$TestPfx     = $env:MALI_TEST_PFX,
     [string]$PfxPassword = $env:MALI_TEST_PFX_PASSWORD,
-    [switch]$SkipSign
+    [switch]$SkipSign,
+    # Build a second, independently installable package (different .sys, INF,
+    # service and ROOT hardware ID) so a bring-up variant can be loaded next to
+    # the validated driver without replacing it.
+    [string]$PackageName = 'MaliKmd',
+    # Compile the (now corrected) AArch64 4K page-table path instead of the
+    # validated IDENTITY address mode. Default stays off on main.
+    [switch]$UsePageTables
 )
 
 $ErrorActionPreference = 'Stop'
@@ -51,6 +58,11 @@ try {
     Write-Host ("  sdk     : {0}  ({1})" -f $t.KitsRoot, $t.SdkVer)
 
     $out     = Join-Path $root 'build'
+    if ($PackageName -ne 'MaliKmd') {
+        # Keep variants out of the main build directory so `build\package`
+        # (used by stage-testkit.ps1) only ever holds the validated driver.
+        $out = Join-Path $out $PackageName
+    }
     $objDir  = Join-Path $out 'obj'
     $package = Join-Path $out 'package'
     New-Item -ItemType Directory -Force -Path $objDir  | Out-Null
@@ -82,6 +94,7 @@ try {
         '-Wno-unknown-pragmas','-Wno-ignored-pragma-intrinsic',
         '-Iinclude','-Isrc'
     ) + $opt
+    if ($UsePageTables) { $cc += '-DMALI_MMU_USE_PAGE_TABLES=1' }
     $cc += @('-isystem', $t.KmInc, '-isystem', $t.KmCrt, '-isystem', $t.WdfInc)
     if (Test-Path -LiteralPath $t.SdkShared) { $cc += @('-isystem', $t.SdkShared) }
 
@@ -95,7 +108,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Compile failed: $src" }
     }
 
-    $sys = Join-Path $out 'MaliKmd.sys'
+    $sys = Join-Path $out ($PackageName + '.sys')
     $link = @(
         '/nologo','/driver','/kernel','/subsystem:native','/machine:ARM64',
         '/entry:FxDriverEntry','/nodefaultlib','/ignore:4257',
@@ -129,9 +142,16 @@ try {
 
     # --- package (INF + SYS + CAT), optionally signed with a local test cert ---
     $infText = Get-Content -LiteralPath (Join-Path $root 'MaliKmd.inf') -Raw
+    if ($PackageName -ne 'MaliKmd') {
+        # Derive a fully independent package: distinct file/section/service
+        # names, a distinct root hardware ID, and a matching catalog name.
+        $suffix  = $PackageName -replace '^MaliKmd', ''
+        $infText = $infText.Replace('MaliKmd', $PackageName)
+        if ($suffix) { $infText = $infText.Replace('ROOT\MaliMtk', ('ROOT\MaliMtk' + $suffix)) }
+    }
     $infText = [regex]::Replace($infText, '(?m)^KmdfLibraryVersion\s*=.*$',
                                 ("KmdfLibraryVersion = {0}" -f $t.KmdfVersion))
-    Set-Content -LiteralPath (Join-Path $package 'MaliKmd.inf') -Value $infText -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $package ($PackageName + '.inf')) -Value $infText -Encoding ASCII
     Copy-Item -LiteralPath $sys -Destination $package -Force
 
     # Ship the public half of the test cert next to the package: a test-signed
@@ -150,18 +170,19 @@ try {
         if ($t.Inf2Cat) {
             & $t.Inf2Cat "/driver:$package" /os:10_GE_ARM64
             if ($LASTEXITCODE -ne 0) { Write-Host 'WARN: Inf2Cat failed; catalog not generated' -ForegroundColor Yellow }
-            # Inf2Cat lowercases the catalog name; the INF refers to MaliKmd.cat.
-            $lowerCat = Join-Path $package 'malikmd.cat'
+            # Inf2Cat lowercases the catalog name; the INF refers to <Name>.cat.
+            $catName  = $PackageName + '.cat'
+            $lowerCat = Join-Path $package ($PackageName.ToLower() + '.cat')
             if (Test-Path -LiteralPath $lowerCat) {
-                Move-Item -LiteralPath $lowerCat -Destination (Join-Path $package 'MaliKmd.cat') -Force
+                Move-Item -LiteralPath $lowerCat -Destination (Join-Path $package $catName) -Force
             }
         } else {
             Write-Host 'WARN: Inf2Cat.exe not found; catalog not generated' -ForegroundColor Yellow
         }
         if ($t.SignTool) {
-            & $t.SignTool sign /fd SHA256 /f $TestPfx /p $PfxPassword (Join-Path $package 'MaliKmd.sys')
-            if (Test-Path -LiteralPath (Join-Path $package 'MaliKmd.cat')) {
-                & $t.SignTool sign /fd SHA256 /f $TestPfx /p $PfxPassword (Join-Path $package 'MaliKmd.cat')
+            & $t.SignTool sign /fd SHA256 /f $TestPfx /p $PfxPassword (Join-Path $package ($PackageName + '.sys'))
+            if (Test-Path -LiteralPath (Join-Path $package ($PackageName + '.cat'))) {
+                & $t.SignTool sign /fd SHA256 /f $TestPfx /p $PfxPassword (Join-Path $package ($PackageName + '.cat'))
             }
         } else {
             Write-Host 'WARN: signtool.exe not found; package left unsigned' -ForegroundColor Yellow

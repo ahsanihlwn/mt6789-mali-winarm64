@@ -10,6 +10,9 @@
  *   malitest.exe --clkdump                       (read-only clock/power state)
  *   malitest.exe --rd <block> <offset>           (raw MMIO read)
  *   malitest.exe --wr <block> <offset> <value>   (raw MMIO write)
+ *   malitest.exe --ptdump [pa] [index] [count]   (raw page-table entries)
+ *   malitest.exe --ptwalk <gpuva>                (L0..L3 walk for one VA)
+ *   malitest.exe --ptbo [--spray]                (table-in-BO walk experiment)
  *
  * Blocks: 0=GPU 1=MFG_TOP 2=APMIXED 3=SLEEP 4=TOPCKGEN 5=INFRACFG_AO 6=BCRM
  *
@@ -78,6 +81,28 @@ static const char *ParseU(const char *p, unsigned *out)
     *out = v;
     return p;
 }
+/* Same, but 64-bit (page-table physical addresses exceed 32 bits). */
+static const char *ParseU64(const char *p, unsigned long long *out)
+{
+    unsigned long long v = 0; int any = 0, d;
+    p = SkipSpace(p);
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        p += 2;
+        for (;;) {
+            int c = *p;
+            if (c >= '0' && c <= '9') d = c - '0';
+            else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+            else break;
+            v = v * 16 + (unsigned long long)d; p++; any = 1;
+        }
+    } else {
+        while (*p >= '0' && *p <= '9') { v = v * 10 + (unsigned long long)(*p - '0'); p++; any = 1; }
+    }
+    if (!any) return NULL;
+    *out = v;
+    return p;
+}
 static void *Alloc(size_t n) { return HeapAlloc(GetProcessHeap(), 0, n); }
 static void  Free(void *p)   { HeapFree(GetProcessHeap(), 0, p); }
 
@@ -140,6 +165,66 @@ static int WaitMask(HANDLE h, unsigned ofs, unsigned mask, unsigned want, unsign
         Sleep(1);
     }
     return -1;
+}
+
+/*
+ * Read one raw page-table entry. TablePa == 0 selects the L0 (root) table.
+ * Returns 1 on success, 0 on failure.
+ */
+static int PtDumpOne(HANDLE h, unsigned long long tablePa, unsigned index,
+                     unsigned long long *entry)
+{
+    static MALI_KMD_PT_DUMP pd;
+    memset(&pd, 0, sizeof(pd));
+    pd.TablePa = tablePa;
+    pd.Index   = index;
+    pd.Count   = 1;
+    if (!DoIoctl(h, IOCTL_MALI_PT_DUMP, &pd, sizeof(pd), &pd, sizeof(pd))) return 0;
+    *entry = pd.Entries[0];
+    return 1;
+}
+
+/*
+ * Optional raw address-space command sequence, applied immediately before a
+ * job is submitted. Lets the MMU sequencing be bisected from user mode with
+ * no driver rebuild:
+ *   --lockaddr <hex>  set AS_LOCKADDR_LO/HI before the commands
+ *   --oplock --opflushpt --opflushm --opunlock --opupdate
+ * run in that fixed order in kbase's kbase_mmu_hw_do_operation() style.
+ */
+static void AsOps(HANDLE h, const char *cmd)
+{
+    unsigned long long la = 0;
+    unsigned i;
+    int have = 0;
+    static const struct { const char *flag; unsigned code; const char *name; } ops[] = {
+        { "--oplock",    0x02u, "LOCK"     },
+        { "--opflushpt", 0x04u, "FLUSH_PT" },
+        { "--opflushm",  0x05u, "FLUSH_MEM"},
+        { "--opunlock",  0x03u, "UNLOCK"   },
+        { "--opupdate",  0x01u, "UPDATE"   },
+    };
+
+    for (i = 0; i < 5; i++) if (Has(cmd, ops[i].flag)) have = 1;
+    if (!have && !Has(cmd, "--lockaddr")) return;
+
+    if (Has(cmd, "--lockaddr")) {
+        const char *p = Find(cmd, "--lockaddr");
+        ParseU64(p, &la);
+    }
+    WrReg(h, MALI_REG_BLOCK_GPU, 0x2410, (unsigned)(la & 0xFFFFFFFFu));
+    WrReg(h, MALI_REG_BLOCK_GPU, 0x2414, (unsigned)(la >> 32));
+    Out("  asops lockaddr "); OutHex64(la); Out("\r\n");
+
+    for (i = 0; i < 5; i++) {
+        if (!Has(cmd, ops[i].flag)) continue;
+        Out("  asop "); Out(ops[i].name);
+        Out(" before "); OutHex(RdReg(h, MALI_REG_BLOCK_GPU, 0x2428));
+        WrReg(h, MALI_REG_BLOCK_GPU, 0x2418, ops[i].code);
+        Sleep(1);
+        Out(" after "); OutHex(RdReg(h, MALI_REG_BLOCK_GPU, 0x2428));
+        Out("\r\n");
+    }
 }
 
 /* The KMD refreshes the cached ID registers on power-on, so this is worth
@@ -229,7 +314,7 @@ static int Run(void)
      * --irq is pure counter reading and deliberately does not power on.
      */
     if (Has(cmd, "--bo") || Has(cmd, "--job") || Has(cmd, "--rawjob") || Has(cmd, "--jstatus") ||
-        Has(cmd, "--greset") || Has(cmd, "--ghard") || Has(cmd, "--cores")) {
+        Has(cmd, "--greset") || Has(cmd, "--ghard") || Has(cmd, "--cores") || Has(cmd, "--ptbo")) {
         MALI_KMD_POWER p; memset(&p, 0, sizeof(p)); p.State = MALI_POWER_ON;
         if (!DoIoctl(h, IOCTL_MALI_POWER, &p, sizeof(p), NULL, 0)) {
             Out("auto POWER ON failed: "); OutHex(GetLastError()); Out("\r\n");
@@ -325,6 +410,67 @@ static int Run(void)
         Out(":"); OutHex(RdReg(h, MALI_REG_BLOCK_GPU, 0x2420));
         Out("  FAULTEXTRA "); OutHex(RdReg(h, MALI_REG_BLOCK_GPU, 0x243C));
         Out("\r\n");
+    }
+
+    /*
+     * --ptdump [pa] [index] [count] : raw page-table entries. With no
+     * arguments it dumps L0[0..7]; pass a table physical address (as printed
+     * by a previous dump) to descend by hand.
+     */
+    if (Has(cmd, "--ptdump")) {
+        const char *ap = Find(cmd, "--ptdump");
+        static MALI_KMD_PT_DUMP pd;
+        unsigned long long pa = 0, idx = 0, cnt = 8, i;
+        ap = ParseU64(ap, &pa);
+        if (ap) ap = ParseU64(ap, &idx);
+        if (ap) ap = ParseU64(ap, &cnt);
+        if (cnt > MALI_PT_DUMP_MAX) cnt = MALI_PT_DUMP_MAX;
+        memset(&pd, 0, sizeof(pd));
+        pd.TablePa = pa; pd.Index = (unsigned)idx; pd.Count = (unsigned)cnt;
+        if (DoIoctl(h, IOCTL_MALI_PT_DUMP, &pd, sizeof(pd), &pd, sizeof(pd))) {
+            Out("PT "); OutHex64(pa); Out("\r\n");
+            for (i = 0; i < cnt; i++) {
+                Out("  ["); OutDec((unsigned)(idx + i)); Out("] ");
+                OutHex((unsigned)(pd.Entries[i] >> 32));
+                OutU((unsigned)pd.Entries[i], 16, 8);
+                Out("  type "); OutHex((unsigned)(pd.Entries[i] & 3));
+                Out("\r\n");
+            }
+        } else {
+            Out("PT_DUMP failed: "); OutHex(GetLastError()); Out("\r\n");
+        }
+    }
+
+    /*
+     * --ptwalk <va> : follow the hierarchy exactly the way the GPU's walker
+     * does (L0..L3) and print every entry it would fetch for that VA.
+     */
+    if (Has(cmd, "--ptwalk")) {
+        const char *ap = Find(cmd, "--ptwalk");
+        unsigned long long va = 0, pa = 0, e = 0, i;
+        unsigned shifts[4] = { 39, 30, 21, 12 };
+        ap = ParseU64(ap, &va);
+        if (!ap) {
+            Out("usage: --ptwalk <va>\r\n");
+        } else {
+            Out("ptwalk VA "); OutHex64(va); Out("\r\n");
+            pa = 0;  /* root table */
+            for (i = 0; i < 4; i++) {
+                unsigned idx = (unsigned)((va >> shifts[i]) & 0x1FF);
+                if (!PtDumpOne(h, pa, idx, &e)) {
+                    Out("  L"); OutDec((unsigned)i); Out(" dump failed\r\n");
+                    break;
+                }
+                Out("  L"); OutDec((unsigned)i); Out(" idx "); OutHex(idx);
+                Out(" = "); OutHex((unsigned)(e >> 32)); OutU((unsigned)e, 16, 8);
+                Out("  type "); OutHex((unsigned)(e & 3));
+                Out("\r\n");
+                if (i < 3) {
+                    if ((e & 3) != 3) { Out("  stop: not a table pointer\r\n"); break; }
+                    pa = e & 0xFFFFFFF000ull;
+                }
+            }
+        }
     }
 
     if (Has(cmd, "--rd")) {
@@ -592,8 +738,12 @@ static int Run(void)
                 const char *mp = Find(cmd, "--adrmode");
                 unsigned mode = 6;
                 if (mp) ParseU(mp, &mode);
+                /* PTW_SH (bits 29:28) must stay 0 on a non-coherent GPU:
+                 * setting it makes the page-table walk fail at level 0. */
                 WrReg(h, MALI_REG_BLOCK_GPU, 0x2430,
-                      (mode & 0xFu) | (2u << 24) | (2u << 28) | (1u << 30));
+                      (mode & 0xFu) | (2u << 24) | (1u << 30) |
+                      (Has(cmd, "--ptwsh") ? (2u << 28) : 0u));
+                WrReg(h, MALI_REG_BLOCK_GPU, 0x2418, 1u);   /* AS_COMMAND_UPDATE */
                 WrReg(h, MALI_REG_BLOCK_GPU, 0x2434, 0);
                 WrReg(h, MALI_REG_BLOCK_GPU, 0x2418, 1u);
                 Sleep(2);
@@ -691,6 +841,8 @@ static int Run(void)
             WrReg(h, MALI_REG_BLOCK_GPU, 0x1008,
                   RdReg(h, MALI_REG_BLOCK_GPU, 0x1008) | 0x00010001u);
 
+            AsOps(h, cmd);
+
             WrReg(h, MALI_REG_BLOCK_GPU, 0x1840, (unsigned)(bo.GpuVa & 0xFFFFFFFFu));
             WrReg(h, MALI_REG_BLOCK_GPU, 0x1844, (unsigned)(bo.GpuVa >> 32));
             WrReg(h, MALI_REG_BLOCK_GPU, 0x1850, RdReg(h, MALI_REG_BLOCK_GPU, 0x100));
@@ -779,6 +931,153 @@ static int Run(void)
                 if (DoIoctl(h, IOCTL_MALI_FREE_BO, &fr, sizeof(fr), NULL, 0)) Out("rawjob BO freed\r\n");
                 else { Out("rawjob BO free failed: "); OutHex(GetLastError()); Out("\r\n"); }
             }
+        }
+    }
+
+    /*
+     * --ptbo : self-contained page-table experiment.
+     *
+     * Builds a complete four-level AArch64 tree (and a one-job chain) inside
+     * ordinary buffer objects - the exact memory the GPU is already proven to
+     * read in IDENTITY mode - then points AS0's TRANSTAB at it and submits.
+     *
+     * This separates the two remaining explanations for the level-0
+     * translation fault on the driver's own tables:
+     *   - --ptbo works : the walk mechanism is fine, so the fault is caused by
+     *                    something specific to the driver's table pages/PA;
+     *   - --ptbo fails : the walk itself is wrong (index/level/adrmode), and
+     *                    adding --spray (every index at every level points at
+     *                    the next level, every L3 index maps the chain page)
+     *                    tells whether the hardware simply indexes differently.
+     */
+    if (Has(cmd, "--ptbo")) {
+        MALI_KMD_BO_ALLOC ta, tb;
+        unsigned long long PA_A, PA_B, VA_B;
+        volatile unsigned long long *t0, *t1, *t2, *t3;
+        volatile unsigned *chain;
+        unsigned char *baseA, *baseB;
+        unsigned long long tgt;
+        unsigned i2;
+        unsigned transcfg = 6u | (2u << 24) | (2u << 28) | (1u << 30);
+        int spray = Has(cmd, "--spray");
+        int lvl0 = Has(cmd, "--lvl0");
+
+        if (Has(cmd, "--tc")) {
+            unsigned long long tv = 0;
+            const char *tp2 = Find(cmd, "--tc");
+            ParseU64(tp2, &tv);
+            transcfg = (unsigned)tv;
+        }
+
+        memset(&ta, 0, sizeof(ta)); memset(&tb, 0, sizeof(tb));
+        ta.Size = 0x4000;   /* four pages: L0, L1, L2, L3 */
+        tb.Size = 0x1000;   /* one page: the job chain      */
+        ta.Flags = tb.Flags = MALI_BO_CPU_RD | MALI_BO_CPU_WR | MALI_BO_GPU_RD | MALI_BO_GPU_WR;
+
+        if (DoIoctl(h, IOCTL_MALI_MMU_ENABLE, NULL, 0, NULL, 0)) Out("ptbo: MMU enabled\r\n");
+        else { Out("ptbo: MMU_ENABLE failed: "); OutHex(GetLastError()); Out("\r\n"); }
+
+        if (!DoIoctl(h, IOCTL_MALI_ALLOC_BO, &ta, sizeof(ta), &ta, sizeof(ta))) {
+            Out("ptbo: table BO alloc failed: "); OutHex(GetLastError()); Out("\r\n");
+        } else if (!DoIoctl(h, IOCTL_MALI_ALLOC_BO, &tb, sizeof(tb), &tb, sizeof(tb))) {
+            Out("ptbo: chain BO alloc failed: "); OutHex(GetLastError()); Out("\r\n");
+            { MALI_KMD_BO_FREE f2; memset(&f2, 0, sizeof(f2)); f2.Handle = ta.Handle;
+              DoIoctl(h, IOCTL_MALI_FREE_BO, &f2, sizeof(f2), NULL, 0); }
+        } else {
+            PA_A = ta.GpuVa;   /* for this KMD a BO's GpuVa == its physical address */
+            PA_B = tb.GpuVa;
+            VA_B = PA_B;
+            Out("ptbo: table PA "); OutHex64(PA_A);
+            Out("  chain PA/VA "); OutHex64(VA_B);
+            Out(spray ? "  (spray)\r\n" : "\r\n");
+
+            baseA = (unsigned char *)(uintptr_t)ta.UserVa;
+            baseB = (unsigned char *)(uintptr_t)tb.UserVa;
+            t0 = (volatile unsigned long long *)(baseA + 0x0000);
+            t1 = (volatile unsigned long long *)(baseA + 0x1000);
+            t2 = (volatile unsigned long long *)(baseA + 0x2000);
+            t3 = (volatile unsigned long long *)(baseA + 0x3000);
+            chain = (volatile unsigned *)(uintptr_t)tb.UserVa;
+
+            for (i2 = 0; i2 < 512; i2++) { t0[i2] = 0; t1[i2] = 0; t2[i2] = 0; t3[i2] = 0; }
+
+            if (lvl0) {
+                /* Only the top level is valid: if the walker reads our L0 at
+                 * all it must now fault one level lower (0xC1), which tells us
+                 * whether the fault level is counted from the top. */
+                for (i2 = 0; i2 < 512; i2++) t0[i2] = (PA_A + 0x1000ull) | 0x403ull;
+            } else if (spray) {
+                for (i2 = 0; i2 < 512; i2++) {
+                    t0[i2] = (PA_A + 0x1000ull) | 0x403ull;   /* table, next level */
+                    t1[i2] = (PA_A + 0x2000ull) | 0x403ull;
+                    t2[i2] = (PA_A + 0x3000ull) | 0x403ull;
+                    t3[i2] = (VA_B) | 0x457ull;              /* 4K leaf, RW, NC */
+                }
+            } else {
+                t0[(VA_B >> 39) & 0x1FF] = (PA_A + 0x1000ull) | 0x403ull;
+                t1[(VA_B >> 30) & 0x1FF] = (PA_A + 0x2000ull) | 0x403ull;
+                t2[(VA_B >> 21) & 0x1FF] = (PA_A + 0x3000ull) | 0x403ull;
+                t3[(VA_B >> 12) & 0x1FF] = (VA_B) | 0x457ull;
+            }
+
+            for (i2 = 0; i2 < 64; i2++) chain[i2] = 0;
+            chain[4] = (1u << 0) | ((2u & 0x7Fu) << 1) | ((1u & 0xFFFFu) << 16);
+            chain[5] = 0; chain[6] = 0; chain[7] = 0;
+            tgt = VA_B + 0x100;
+            chain[8]  = (unsigned)(tgt & 0xFFFFFFFFu);
+            chain[9]  = (unsigned)(tgt >> 32);
+            chain[10] = 3;                                     /* MALI_WRITE_VALUE_ZERO */
+            chain[11] = 0; chain[12] = 0; chain[13] = 0;
+            *(volatile unsigned *)(uintptr_t)(baseB + 0x100) = 0xDEADBEEFu;
+
+            WrReg(h, MALI_REG_BLOCK_GPU, 0x2400, (unsigned)(PA_A & 0xFFFFFFFFu));
+            WrReg(h, MALI_REG_BLOCK_GPU, 0x2404, (unsigned)(PA_A >> 32));
+            WrReg(h, MALI_REG_BLOCK_GPU, 0x2430, transcfg);
+            WrReg(h, MALI_REG_BLOCK_GPU, 0x2434, 0);
+            WrReg(h, MALI_REG_BLOCK_GPU, 0x2418, 1u);          /* AS_COMMAND_UPDATE */
+            Sleep(2);
+
+            Out("ptbo: TRANSTAB "); OutHex(RdReg(h, MALI_REG_BLOCK_GPU, 0x2404));
+            Out(":"); OutHex(RdReg(h, MALI_REG_BLOCK_GPU, 0x2400));
+            Out("  TRANSCFG "); OutHex(RdReg(h, MALI_REG_BLOCK_GPU, 0x2430));
+            Out("  AS_STATUS "); OutHex(RdReg(h, MALI_REG_BLOCK_GPU, 0x2428));
+            Out("\r\n");
+
+            WrReg(h, MALI_REG_BLOCK_GPU, 0x1004, 0x00010001u);
+            WrReg(h, MALI_REG_BLOCK_GPU, 0x1008,
+                  RdReg(h, MALI_REG_BLOCK_GPU, 0x1008) | 0x00010001u);
+            WrReg(h, MALI_REG_BLOCK_GPU, 0x0004, 0xFFFFFFFFu);   /* GPU_IRQ_CLEAR */
+            Sleep(2);
+
+            AsOps(h, cmd);
+
+            WrReg(h, MALI_REG_BLOCK_GPU, 0x1840, (unsigned)(VA_B & 0xFFFFFFFFu));
+            WrReg(h, MALI_REG_BLOCK_GPU, 0x1844, (unsigned)(VA_B >> 32));
+            WrReg(h, MALI_REG_BLOCK_GPU, 0x1850, RdReg(h, MALI_REG_BLOCK_GPU, 0x100));
+            WrReg(h, MALI_REG_BLOCK_GPU, 0x1854, 0);
+            WrReg(h, MALI_REG_BLOCK_GPU, 0x1858, 0x00008000u);
+            WrReg(h, MALI_REG_BLOCK_GPU, 0x1860, 1u);          /* JS_COMMAND_START */
+
+            /* Poll on the sentinel: it only clears when the job actually
+             * executed, so a stale interrupt bit cannot end the loop early. */
+            for (i2 = 0; i2 <= 500; i2++) {
+                if (*(volatile unsigned *)(uintptr_t)(baseB + 0x100) == 0) break;
+                Sleep(1);
+            }
+            Sleep(20);
+            Out("ptbo: waited "); OutDec(i2); Out(" ms");
+            Out("  JS_STATUS "); OutHex(RdReg(h, MALI_REG_BLOCK_GPU, 0x1824));
+            Out("  AS_FAULTSTATUS "); OutHex(RdReg(h, MALI_REG_BLOCK_GPU, 0x241C));
+            Out("  AS_FAULTADDR "); OutHex(RdReg(h, MALI_REG_BLOCK_GPU, 0x2420));
+            Out("  GPU_IRQ_RAWSTAT "); OutHex(RdReg(h, MALI_REG_BLOCK_GPU, 0x0004));
+            Out("  JS_STATE "); OutHex(RdReg(h, MALI_REG_BLOCK_GPU, 0x1820));
+            Out("\r\nptbo: sentinel "); OutHex(*(volatile unsigned *)(uintptr_t)(baseB + 0x100));
+            Out("\r\n");
+
+            { MALI_KMD_BO_FREE fr; memset(&fr, 0, sizeof(fr)); fr.Handle = tb.Handle;
+              DoIoctl(h, IOCTL_MALI_FREE_BO, &fr, sizeof(fr), NULL, 0); }
+            { MALI_KMD_BO_FREE fr2; memset(&fr2, 0, sizeof(fr2)); fr2.Handle = ta.Handle;
+              DoIoctl(h, IOCTL_MALI_FREE_BO, &fr2, sizeof(fr2), NULL, 0); }
         }
     }
 

@@ -152,6 +152,8 @@ static NTSTATUS MaliHandleMmuEnable(_In_ PMALI_KMD_DEVICE Ctx, _In_ WDFREQUEST R
     NTSTATUS Status;
     ULONG TranscfgLo = 0, TranscfgHi = 0;
     ULONG OutData[2] = {0, 0};
+    PULONG Out = NULL;
+    size_t OutLen = 0;
 
     /* The GPU must be powered before the MMU can be programmed. */
     Status = MaliHwPowerOn(Ctx);
@@ -166,6 +168,16 @@ static NTSTATUS MaliHandleMmuEnable(_In_ PMALI_KMD_DEVICE Ctx, _In_ WDFREQUEST R
     DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
                "MaliKmd: MMU_ENABLE IOCTL - Status=0x%08X UsePageTables=%d TranscfgLo=0x%08X\n",
                Status, Ctx->Mmu.UsePageTables, TranscfgLo);
+    /*
+     * METHOD_BUFFERED shares one system buffer between input and output; copy
+     * the result out explicitly (this used to report the length only, so the
+     * caller always read zeros and had to fall back to a raw TRANSCFG read).
+     */
+    if (NT_SUCCESS(Status) &&
+        NT_SUCCESS(WdfRequestRetrieveOutputBuffer(Request, sizeof(OutData), (PVOID *)&Out, &OutLen))) {
+        Out[0] = OutData[0];
+        Out[1] = OutData[1];
+    }
     MaliComplete(Request, Status, NT_SUCCESS(Status) ? sizeof(OutData) : 0);
     return STATUS_SUCCESS;
 }
@@ -322,6 +334,20 @@ static NTSTATUS MaliHandleIrqStats(_In_ PMALI_KMD_DEVICE Ctx, _In_ WDFREQUEST Re
     return STATUS_SUCCESS;
 }
 
+static NTSTATUS MaliHandlePtDump(_In_ PMALI_KMD_DEVICE Ctx, _In_ WDFREQUEST Request)
+{
+    MALI_KMD_PT_DUMP *Buf;
+    size_t Len;
+    NTSTATUS Status = WdfRequestRetrieveInputBuffer(Request, sizeof(*Buf), (PVOID *)&Buf, &Len);
+
+    if (!NT_SUCCESS(Status)) {
+        return Status;
+    }
+    Status = MaliMmuPtDump(Ctx, Buf->TablePa, Buf->Index, Buf->Count, Buf->Entries);
+    MaliComplete(Request, Status, NT_SUCCESS(Status) ? sizeof(*Buf) : 0);
+    return STATUS_SUCCESS;
+}
+
 /* ---- caller-context BO handling ---------------------------------- */
 
 static NTSTATUS MaliBoAllocInContext(_In_ PMALI_KMD_DEVICE Ctx, _In_ WDFREQUEST Request)
@@ -466,6 +492,9 @@ VOID MaliEvtIoDeviceControl(
         break;
     case IOCTL_MALI_IRQ_STATS:
         Status = MaliHandleIrqStats(Ctx, Request);
+        break;
+    case IOCTL_MALI_PT_DUMP:
+        Status = MaliHandlePtDump(Ctx, Request);
         break;
     default:
         break;

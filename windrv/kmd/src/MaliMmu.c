@@ -48,16 +48,26 @@
 /*
  * Page-table entry, aarch64 4K mode (mali_kbase_mmu_mode_aarch64.c).
  *
- * Entry type encoding (bits 1:0):
+ * Entry type encoding (bits 1:0). Note that a next-level table pointer and a
+ * bottom-level 4K page share the value 3; value 1 is a block (huge page)
+ * descriptor, which is only legal at levels 1..2 and never at level 0.
+ *
  *   0b00 = invalid
- *   0b01 = table descriptor (levels 0..2)  -> ENTRY_IS_ATE_L02
- *   0b10 = reserved
- *   0b11 = page descriptor (level 3)       -> ENTRY_IS_ATE_L3 / ENTRY_IS_PTE
+ *   0b01 = block descriptor, huge page (levels 1..2) -> ENTRY_IS_ATE_L02
+ *   0b10 = invalid                                   -> ENTRY_IS_INVAL
+ *   0b11 = next-level table pointer (levels 0..2)    -> ENTRY_IS_PTE
+ *          bottom-level 4K page      (level  3)      -> ENTRY_IS_ATE_L3
+ *
+ * Getting this wrong is exactly what produced AS_FAULTSTATUS=0x7C0002C0
+ * (TRANSLATION_FAULT at level 0, read): the old code stored 1 for the
+ * L0->L1 pointer, the walker saw a block descriptor where only a table
+ * descriptor is architecturally allowed, and faulted on the first fetch.
+ * Vendor reference: mmu/mali_kbase_mmu_mode_aarch64.c entry_set_pte().
  */
 #define PTE_TYPE_MASK           3ull
-#define PTE_TABLE               1ull       /* next-level table (levels 0..2) = ATE_L02 */
+#define PTE_TABLE               3ull       /* next-level table (levels 0..2) = ENTRY_IS_PTE */
 #define PTE_INVALID             2ull
-#define PTE_L3_VALID            3ull       /* level 3 4KB ATE / PTE = ATE_L3 */
+#define PTE_L3_VALID            3ull       /* level 3 4KB ATE / PTE = ENTRY_IS_ATE_L3 */
 #define PTE_ATTR_INDEX          5ull       /* AS_MEMATTR_INDEX_NON_CACHEABLE */
 #define PTE_ATTR                (PTE_ATTR_INDEX << 2)
 #define PTE_RW                  (1ull << 6)
@@ -311,7 +321,9 @@ NTSTATUS MaliMmuEnable(PMALI_KMD_DEVICE Ctx)
     Transcfg = (Ctx->Mmu.UsePageTables ? AS_TRANSCFG_ADRMODE_AARCH64_4K
                                        : AS_TRANSCFG_ADRMODE_IDENTITY) |
                AS_TRANSCFG_PTW_MEMATTR_WRITE_BACK |
+#if MALI_MMU_PTW_SH_OS
                AS_TRANSCFG_PTW_SH_OS |
+#endif
                AS_TRANSCFG_R_ALLOCATE;
 
     DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
@@ -431,5 +443,33 @@ NTSTATUS MaliMmuGetFault(PMALI_KMD_DEVICE Ctx, PULONG Status, PULONG64 Address)
 
     *Status  = Fs;
     *Address = ((UINT64)Hi << 32) | Lo;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS MaliMmuPtDump(PMALI_KMD_DEVICE Ctx, UINT64 TablePa,
+                       ULONG Index, ULONG Count, PUINT64 Entries)
+{
+    PUINT64 Table;
+    ULONG i;
+
+    if (Count > MALI_PT_DUMP_MAX) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if ((UINT64)Index + Count > MALI_PT_ENTRIES) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (TablePa == 0) {
+        Table = (PUINT64)Ctx->Mmu.L0Table;
+    } else {
+        Table = (PUINT64)MaliFindPtVa(Ctx, TablePa & PTE_ADDR_MASK);
+    }
+    if (Table == NULL) {
+        return STATUS_NOT_FOUND;
+    }
+
+    for (i = 0; i < Count; i++) {
+        Entries[i] = Table[Index + i];
+    }
     return STATUS_SUCCESS;
 }

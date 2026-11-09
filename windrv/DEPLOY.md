@@ -62,6 +62,29 @@ Prerequisites on the tablet: Secure Boot off and test signing on
 Pass = job chains complete. This is already validated on silicon; it only
 confirms the freshly staged build.
 
+### 1b. Page-table variant (AArch64 4K) — validated 2026-11-09
+
+The table path is now proven on silicon. It is a **separate package** so the
+validated driver above is never replaced:
+
+- [ ] `windrv\kmd\build.ps1 -PackageName MaliKmdPt -UsePageTables`
+- [ ] `pnputil /add-driver ...\build\MaliKmdPt\package\MaliKmdPt.inf /install`
+      then `devcon install <inf> ROOT\MaliMtkPt`
+      (installs as a second device, `ROOT\SYSTEM\0002`, service `MaliKmdPt`).
+- [ ] Disable the original device (`ROOT\MaliMtkPt` variant only) so there is no
+      device-interface ambiguity.
+- [ ] `malitest.exe --off --on --cores` before **every** experiment — fault
+      registers and the job slot are sticky.
+- [ ] `malitest.exe --rawjob --chain 2 --wv` must print
+      `MMU enabled (UsePageTables=1, TranscfgLo=0x0x42000006)`,
+      `JS_STATUS 0x00000000`, `AS_FAULTSTATUS 0x00000000`, `chain cleared 2/2`.
+- [ ] `malitest.exe --bo --job --jstatus` → `job done: JS_STATUS 0x00000000`.
+
+Any `AS_FAULTSTATUS 0x7C0002C0` means `AS_TRANSCFG` has a non-zero `PTW_SH`
+field — see [`MMU-PAGE-TABLES.md`](MMU-PAGE-TABLES.md). Uninstall with
+`pnputil /delete-driver oem<N>.inf /uninstall` after
+`devcon remove ROOT\MaliMtkPt`.
+
 ---
 
 ## 2. Jalur A Vulkan ICD (our own, no shaders)

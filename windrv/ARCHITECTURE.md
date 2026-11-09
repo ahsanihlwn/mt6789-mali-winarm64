@@ -123,6 +123,13 @@ MT6833 / MT6853 / MT6879 / MT6895 ← stub; power ditolak sampai SPM-nya diisi
 - **AArch64 4K**, 4 level tabel (top 0 → bottom 3), shift 39/30/21/12.
 - **Identity**: GPU VA == PA (bring-up). Non-cached, jadi tanpa cache maintenance.
 - AS0 base `0x2400`; enable via `AS_TRANSCFG` + `AS_COMMAND_UPDATE`.
+- `AS_TRANSCFG` untuk AArch64 4K = `0x42000006`:
+  `ADRMODE_AARCH64_4K(6) | PTW_MEMATTR_WRITE_BACK | R_ALLOCATE`.
+  **`PTW_SH` (bit 29:28) harus 0** — GPU ini non-coherent; kalau di-set,
+  page-table walker gagal di level 0 dan fault `0x7C0002C0`. Lihat
+  `MMU-PAGE-TABLES.md`.
+- PTE next-level table pakai tipe **3** (`ENTRY_IS_PTE`), bukan 1 (block).
+- Path tabel sudah terbukti di silicon (`-UsePageTables`, `chain cleared 2/2`).
 - Pembuatan tabel race-safe (double-check + spinlock; alokasi tetap di PASSIVE).
 - Fault status + address bisa dibaca lewat IOCTL.
 

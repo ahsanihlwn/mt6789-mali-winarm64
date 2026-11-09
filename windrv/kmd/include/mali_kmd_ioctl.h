@@ -198,6 +198,25 @@ typedef struct _MALI_KMD_IRQ_STATS {
 } MALI_KMD_IRQ_STATS;
 
 /* ------------------------------------------------------------------ */
+/* Page-table inspection (bring-up diagnostics)                        */
+/* ------------------------------------------------------------------ */
+#define MALI_PT_DUMP_MAX 256
+
+/*
+ * Read raw 64-bit entries out of a live page table so the table hierarchy
+ * (L0..L3) that MaliMmuMap built can be compared against what the GPU's
+ * walker actually fetches. TablePa == 0 selects the L0 (root) table; any
+ * other value selects a tracked page-table page by its physical address
+ * (as returned in a previous dump's Entries[]).
+ */
+typedef struct _MALI_KMD_PT_DUMP {
+    UINT64 TablePa;                    /* input: 0 = L0 (root) table         */
+    UINT32 Index;                      /* input: first entry to return       */
+    UINT32 Count;                      /* input: number of entries (<= MAX)  */
+    UINT64 Entries[MALI_PT_DUMP_MAX];  /* output: raw 64-bit PTEs            */
+} MALI_KMD_PT_DUMP;
+
+/* ------------------------------------------------------------------ */
 /* IOCTL codes                                                         */
 /* ------------------------------------------------------------------ */
 #define MALI_IOCTL_BASE 0x800
@@ -236,6 +255,8 @@ typedef struct _MALI_KMD_IRQ_STATS {
     CTL_CODE(MALI_KMD_DEVICE_TYPE, MALI_IOCTL_BASE + 15, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_MALI_IRQ_STATS \
     CTL_CODE(MALI_KMD_DEVICE_TYPE, MALI_IOCTL_BASE + 16, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_MALI_PT_DUMP \
+    CTL_CODE(MALI_KMD_DEVICE_TYPE, MALI_IOCTL_BASE + 17, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
 #pragma pack(pop)
 
