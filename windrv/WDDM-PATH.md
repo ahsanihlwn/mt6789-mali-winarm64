@@ -44,6 +44,14 @@ ada adalah **lapisan Windows graphics**.
 Kesalahan umum: menganggap lapis 2 dan 3 satu paket. **Tidak.** Lapis 2 bisa
 berdiri sendiri dan itu yang membuat Mali "dikenali".
 
+> **"Beri akses display ke GPU" bukan lapis 2 atau 3.** Di MT6789, Mali tidak
+> punya scan-out sama sekali; yang menggerakkan panel adalah MMSYS
+> (OVL→RDMA→DSI). Analisis lengkap stack Android dan tangga menuju display ada di
+> [`DISPLAY-ANDROID.md`](DISPLAY-ANDROID.md). Ringkasnya: L3 (WDDM render-only)
+> = "Task Manager kenal"; L4 (D3D11 UMD) = "desktop dirender Mali"; L5 (display
+> miniport MMSYS) = "panel digerakkan driver kita". L3/L4/L5 adalah tiga
+> pekerjaan berbeda.
+
 ## 2. Lapis 2 — WDDM render-only adapter
 
 ### 2.1 Kenapa render-only
@@ -149,6 +157,8 @@ Tidak ada implementasi independen di dunia. Yang realistis:
 | W4 | (opsional) submission lewat D3DKMT | angka engine bergerak di Task Manager |
 | V1..V4 | Vulkan ICD → render → DXVK → vkd3d | aplikasi benar-benar dipercepat |
 | W5 | (opsional, jangka panjang) UMD D3D12 | D3D12 native tanpa translasi |
+| D1 | (opsional) UMD D3D11 | DWM/desktop dirender Mali |
+| D2 | (terakhir) display miniport MMSYS/DSI | panel lepas dari BDA, vsync asli |
 
 W3 sengaja **setelah** W0–W2 karena ketiganya dipakai bersama: WDDM tanpa IRQ asli
 dan tanpa page table akan langsung mentok di `DxgkDdiSubmitCommand`.

@@ -13,10 +13,17 @@ What is needed is correct **ACPI** (`MADT`/`GTDT`/`FADT`/`PPTT`, `DSDT`) + PSCI.
 The `edk2-UEFI-mtk` tree is already drafting those tables. This is a
 completion/verification task, not a research project.
 
-**Display — yes, with two tiers.**
+**Display — yes, but split carefully.** Mali has **no scan-out**: on MT6789 the
+panel is driven by MediaTek MMSYS (OVL → RDMA → DSI), a different block from the
+GPU. Android works the same way — Mali only writes buffers that the display
+controller reads. See [`DISPLAY-ANDROID.md`](DISPLAY-ANDROID.md) for the full map
+and the L1–L5 ladder. The tiers are:
 1. Tier A (fast): ship the UEFI GOP framebuffer and let the **Microsoft Basic
    Display Adapter** drive scanout at native res. Gets a real desktop today.
-2. Tier B (proper): a WDDM *display-only* miniport for MTK MDP/OVL/DSI.
+2. Tier B (Mali renders, BDA scans out): present path copies the rendered frame
+   into the BDA framebuffer. No WDDM, no UMD, no display driver.
+3. Tier C (proper): a WDDM display-only miniport for MTK MDP/OVL/DSI — last,
+   because it needs per-panel DSI init and a recovery path.
 
 **GPU 3D + DirectX 12 — possible, but this is research-grade and long.**
 There is **no Mali (Arm) WDDM/Windows driver in existence** — not from Arm, not
@@ -64,7 +71,7 @@ usable:
 | Layer | Component | Owner |
 |-------|-----------|-------|
 | CPU/timer/IRQ | ACPI tables + PSCI | finish in `edk2-UEFI-mtk` |
-| Display | Basic Display Adapter → later WDDM display miniport (MDP/OVL/DSI) | us |
+| Display | Basic Display Adapter → present-by-copy → later WDDM display miniport (MMSYS/OVL/DSI) | us |
 | GPU memory/regs | **Mali KMD (KMDF, ARM64)** | us |
 | Vulkan | **Mesa PanVK ICD on Windows** — talks to KMD | us (port) |
 | D3D12 | vkd3d-proton | reuse |
@@ -203,6 +210,16 @@ usable:
       utilisation reflects real Mali work instead of reading 0 %.
 - [ ] Optional, long term: a D3D12 UMD — the only way to get native D3D on Mali.
 - Needs Microsoft driver signing to ship.
+- Ladder position: this is **L3**. It makes Task Manager show the adapter, but
+  the desktop still renders elsewhere. **L4** (desktop rendered by Mali) needs a
+  D3D11 UMD because DWM only speaks D3D. See [`DISPLAY-ANDROID.md`](DISPLAY-ANDROID.md) §5.
+
+**Phase 5b — Display miniport for MTK MMSYS/DSI (last)** — *L5, high risk*
+- [ ] Port `mtk_drm_drv`/`mtk_disp_ovl`/`mtk_disp_rdma`/`mtk_dsi` concepts to a
+      WDDM display miniport (VidPn, scan-out, vsync, hotplug).
+- [ ] Per-panel DSI init sequence for P13001L; DSI PHY/PLL tuning; DSC if used.
+- Requires a proven recovery path (WinPE + UART) before first attempt: a bad
+  mode set can leave the panel dark and GOP does not automatically return.
 
 **Phase 6 — Distribution**
 - Dev: test signing. Ship: attestation/WHQL (ARM64 kernel drivers must be

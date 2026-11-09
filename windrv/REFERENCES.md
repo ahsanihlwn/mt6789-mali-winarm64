@@ -102,6 +102,44 @@ kode proyek tetap ditulis sendiri di dalam `windrv\`.
   `clk-mt6789*.c` (clock tree), `mtk-scpsys-mt6789.c` (MTCMOS),
   `mt6789.dts` (node `mali@13000000`, `g3d_config@13fbf000`).
 
+## 5. Display: DRM/KMS, MMSYS, dan jalur WDDM
+
+Dipakai untuk [`DISPLAY-ANDROID.md`](DISPLAY-ANDROID.md) dan
+[`WDDM-PATH.md`](WDDM-PATH.md).
+
+- **Linux DRM/KMS — overview** — <https://docs.kernel.org/gpu/drm-kms.html>
+  Model CRTC/plane/connector/encoder + atomic commit. Ini kontrak yang dipakai
+  Android, dan yang harus "diterjemahkan" ke VidPn WDDM.
+- **MediaTek DRM driver (upstream)** —
+  <https://elixir.bootlin.com/linux/latest/source/drivers/gpu/drm/mediatek>
+  Padanan upstream dari tree vendor lokal. Berguna untuk melihat komponen MMSYS
+  yang lebih baru (`mtk_disp_ccorr`, `mtk_disp_gamma`, `mtk_disp_dither`,
+  `mtk_disp_merge`, `mtk_mutex`, `mtk_drm_ddp_comp`) yang tidak ada di tree
+  vendor MT6789.
+- **dma-buf — sharing buffer antar device** — <https://docs.kernel.org/driver-api/dma-buf.html>
+  Mekanisme zero-copy GPU↔display di Android. Tidak ada padanan langsung di
+  Windows; konsepnya dipetakan ke allocation KMD di `DISPLAY-ANDROID.md` §3.
+- **AOSP graphics stack (SurfaceFlinger / HWC / gralloc)** —
+  <https://source.android.com/docs/core/graphics>
+  Komposisi terpisah dari scan-out: SurfaceFlinger memilih GPU atau overlay HWC.
+- **WDDM — display driver model** —
+  <https://learn.microsoft.com/en-us/windows-hardware/drivers/display/>
+  VidPn/VidMm/VidSch. Kontrak pengganti DRM/KMS di Windows.
+- **Kernel Mode Display-Only Driver (KMDOD) sample** —
+  <https://github.com/microsoft/Windows-driver-samples/tree/main/video/KernelModeDisplayOnly>
+  Kerangka WDDM render-only/display-only (tanpa 3D engine). Basis yang paling
+  masuk akal untuk L3 (Mali muncul di Task Manager).
+- **D3D12 UMD (D3D12DDI)** —
+  <https://learn.microsoft.com/en-us/windows-hardware/drivers/display/d3d12-umd>
+  Tabel fungsi yang harus diisi kalau suatu hari menulis UMD D3D12 native.
+- **D3D11 UMD** —
+  <https://learn.microsoft.com/en-us/windows-hardware/drivers/display/d3d11-umd>
+  Yang dibutuhkan DWM untuk mengomposisi desktop di Mali (L4).
+- **Indirect Display Driver (IddCx)** —
+  <https://learn.microsoft.com/en-us/windows-hardware/drivers/display/indirect-display-driver-model-overview>
+  Bukan solusi kita (IddCx tidak menggerakkan hardware), tapi berguna sebagai
+  pembanding saat memilih antara "display miniport asli" dan jalur lain.
+
 ---
 
 ## Ringkasan "mengapa ini penting"
@@ -115,3 +153,5 @@ kode proyek tetap ditulis sendiri di dalam `windrv\`.
 | GPUReplay | Bukti bahwa stack GPU tipis itu layak |
 | Mali DDK regmap | Definisi register resmi (validasi offset) |
 | Vendor kernel tree | Angka power/clock/MTCMOS/register yang pasti untuk MT6789 |
+| DRM/KMS + dma-buf + MediaTek DRM | Model buffer bersama dan pipeline display yang mau dipetakan ke WDDM |
+| KMDOD / D3D11 UMD / D3D12 UMD | Kerangka kerja saat menulis driver Windows (L3/L4) |
