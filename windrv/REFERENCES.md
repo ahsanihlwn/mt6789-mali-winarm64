@@ -46,6 +46,33 @@ kode proyek tetap ditulis sendiri di dalam `windrv\`.
 - **Mesa Panfrost / PanVK** — <https://gitlab.freedesktop.org/mesa/mesa>
   Driver open-source Mali (kernel Panfrost + Vulkan PanVK). Kandidat utama yang
   akan di-port sebagai **Vulkan ICD** kita.
+  - Yang dipakai proyek ini: tag **`mesa-25.0.7`** (PanVK-nya belum butuh
+    CLC/LLVM). Patch portabilitas ada di `mesa/patches/`.
+  - **Batas penting — v9 tidak didukung:** `docs/drivers/panfrost.rst` (25.0.7)
+    mengosongkan kolom **Vulkan** untuk `G57`/`Valhall (v9)`;
+    `src/panfrost/vulkan/meson.build` hanya punya `jm_archs = [6, 7]`. Commit
+    Mesa yang menyatakannya: *"panvk: Don't pretend we can compile for v9"*.
+  - Panfrost **Gallium (OpenGL)** *memang* mendukung v9 — jalur render GPU yang
+    realistis untuk G57 saat ini.
+
+- **Mesa — daftar referensi driver** —
+  <https://docs.mesa3d.org/drivers/panfrost.html> (versi terbit dari
+  `docs/drivers/panfrost.rst` yang memuat tabel dukungan per-arch).
+
+## 2.5. Runtime C++ / CRT-free di Windows ARM64
+
+- **LLVM compiler-rt `chkstk.S` (aarch64)** —
+  <https://github.com/llvm/llvm-project/blob/main/compiler-rt/lib/builtins/aarch64/chkstk.S>
+  Implementasi kanonik `__chkstk` yang dipakai `mesa/runtime/mali_aarch64.s`
+  (clang meng-emit-nya untuk frame/alloca > 4 KiB; MSVC menaruhnya di
+  `vcruntime.lib`, yang tidak terpasang untuk ARM64 di mesin ini).
+- **Microsoft — Windows ARM64 ABI (`__chkstk`)** —
+  <https://learn.microsoft.com/en-us/cpp/build/arm64-windows-abi-conventions>
+  Kontrak register `x15` (jumlah dalam satuan 16 byte), SP tidak berubah.
+- **Microsoft — TLS di PE (`_tls_index`, `IMAGE_TLS_DIRECTORY`)** —
+  <https://learn.microsoft.com/en-us/windows/win32/debug/pe-format#tls-directory>
+  Dipakai untuk menjelaskan mengapa mendefinisikan `_tls_index` cukup
+  (`mali_win32os.cpp`).
 
 ## 3. Paper & arsitektur
 

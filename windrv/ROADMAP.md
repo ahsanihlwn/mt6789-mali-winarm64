@@ -169,10 +169,19 @@ usable:
   buffer object, buffers, and `vkCmdFillBuffer` as a real GPU `WRITE_VALUE` job
   chain through `vkQueueSubmit` + fences (synchronous). No shaders yet. See
   [`GRAPHICS-STACK.md`](GRAPHICS-STACK.md) and [`umd/README.md`](umd/README.md).
-- [ ] **Jalur B — render**: port Mesa `PanVK` (Valhall) to Windows: replace the
-  DRM ioctl backend with our IOCTL backend; build for ARM64. This is what gives
-  shaders, pipelines and textures — and therefore what DXVK/vkd3d/Zink need.
-- [ ] Implement/adjust Win32 WSI (`VK_KHR_win32_surface`) so swapchain present works.
+- [~] **Jalur B — render**: port Mesa `PanVK` to Windows ARM64.
+  - [x] Build a Windows ARM64 PanVK: `vulkan_panfrost.dll` (11.7 MB) links with
+    the CRT-free recipe + libdrm/POSIX shim (`mesa/README.md`, patches
+    `0001..0009`). DRM backend replaced by our IOCTL backend; no MSVC ARM64 CRT
+    needed.
+  - [ ] **The v9 gap.** Upstream PanVK supports Valhall v6/v7 (Bifrost JM) and
+    v10 (CSF), **not v9** (G57). So the linked DLL does not drive this GPU.
+    Options (see [`GRAPHICS-STACK.md`](GRAPHICS-STACK.md) §2.2/§8):
+    (a) **Gallium `panfrost` OpenGL** — mainline *does* support v9; render in GL
+    first; (b) software Vulkan (lavapipe) under vkd3d as a stopgap; (c) write a
+    Valhall-JM v9 Vulkan backend (new backend, not a port).
+  - [ ] Implement/adjust Win32 WSI (`VK_KHR_win32_surface`) so swapchain present
+    works — needed by Zink too, so it follows whichever GL/Vulkan driver is real.
 - Result: a clear triangle / Vulkan CTS smoke test on Mali.
 - This, not the KMD, is what makes the GPU visible to applications.
 
@@ -226,9 +235,13 @@ Written by us:
 
 ## 5. Risks / cost
 
-- Porting PanVK off DRM is the single biggest unknown; the KMD ABI must match
-  what PanVK expects, or Mesa is patched to a new internal interface.
-- Mesa's ARM64-Windows build support is incomplete → expect build-system work.
+- ✅ **Porting PanVK off DRM is done** (shim `mali_drm.cpp` + `cross/compat/*`),
+  and the Windows ARM64 DLL links. The remaining render risk is **v9 having no
+  Vulkan backend upstream** — a real backend to write, not a build problem. The
+  lower-risk render path for this GPU is Gallium `panfrost` OpenGL (v9 is its
+  mainline target).
+- ✅ Mesa's ARM64-Windows build is now proven here: `vulkan_panfrost.dll`,
+  cross-compiled with clang-cl and linked CRT-free.
 - Win32 WSI (swapchain present) is a separate integration point from rendering.
 - ARM64 driver signing: test-sign for dev, attestation/WHQL to ship.
 - No physical debug is cheap: keep the UART console and a WinPE boot loop.

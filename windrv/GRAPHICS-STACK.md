@@ -149,24 +149,45 @@ jadi kebutuhan fitur KMD baru untuk smoke test **kecil**; yang besar justru
 **build Mesa untuk ARM64 Windows** dan **shim Win32/DRM**, dua-duanya di sisi kita.
 
 Realitas build (terukur — lihat [`mesa/README.md`](mesa/README.md)): Meson +
-clang-cl cross ke `aarch64-windows-msvc` **sudah jalan** di mesin dev (objek ARM64
-`0xAA64` + arsip statik terbukti, `tools\build-smoke.ps1`). Tembok CRT **sudah
-dilewati**: yang hilang cuma runtime C++, dan itu diganti shim kecil kita sendiri
-(`mesa/runtime/` — `operator new/delete`, `atexit`, `_Raise_handler`,
-`mainCRTStartup`, `_DllMainCRTStartup`), ditambah resep link CRT-free
-(`ucrt.lib` dinamis + `BufferOverflow.lib` + `msvcurt.lib` + `kernel32.lib` +
-`ntdll.lib`, `-fuse-ld=lld`, `/nodefaultlib`). Terbukti: `.exe` C dan `.dll` ber-STL
-menaut hanya ke apiset UCRT — tanpa `msvcp140.dll`/`vcruntime140.dll`.
-(`tools\build-runtime.ps1`, `tools\link-probe.ps1`.)
+clang-cl cross ke `aarch64-windows-msvc` **sudah jalan** di mesin dev, dan sejak
+2026-11-09 **`vulkan_panfrost.dll` ARM64 sudah berhasil di-link** (11.7 MB,
+`COFF-ARM64`, ekspor `vk_icdGetInstanceProcAddr`, punya TLS directory) — **tanpa
+memasang runtime MSVC ARM64**.
 
-Tembok berikutnya **bukan CRT**: `meson setup` untuk panfrost berhenti di
-`ERROR: Feature llvm cannot be enabled: CLC requires LLVM`. PanVK menyematkan
-kernel CL (`src/panfrost/libpan/*.cl`) yang dikompilasi `mesa_clc` (OpenCL-C
-compiler Mesa) yang menaut LLVM; mesin ini hanya punya `LLVM-C.lib`, tanpa header
-LLVM. Tiga jalan: **pin Mesa versi lama** yang PanVK-nya belum butuh CLC
-(paling murah, host tak tersentuh), pasang LLVM dev (melanggar aturan
-no-install), atau patch Mesa agar melewati `libpan`/CLC (invasif). Detail di
-[`mesa/README.md`](mesa/README.md).
+Tembok CRT **sudah dilewati**: yang hilang cuma runtime C++, dan itu diganti
+shim kecil kita sendiri (`mesa/runtime/` — `operator new/delete`, `atexit`,
+`_Raise_handler`, `mainCRTStartup`, `_DllMainCRTStartup`, `mali_drm.cpp`,
+`mali_posix.cpp`, `mali_win32os.cpp`, `mali_aarch64.s`), ditambah resep link
+CRT-free (`ucrt.lib` dinamis + `BufferOverflow.lib` + `msvcurt.lib` +
+`kernel32.lib` + `ntdll.lib`, `-fuse-ld=lld`, `/nodefaultlib`). Terbukti: `.exe`
+C dan `.dll` ber-STL menaut hanya ke apiset UCRT — tanpa
+`msvcp140.dll`/`vcruntime140.dll`.
+
+Tembok CLC/LLVM juga **sudah dilewati**: checkout di-pin ke **`mesa-25.0.7`**
+(versi terbaru yang PanVK-nya belum butuh CLC), dan patch portabilitas
+`windrv/mesa/patches/0001..0009` menutup sisa celah Windows — libdrm + `mmap`/
+`poll`/syncobj, `sysinfo`, `sched_yield`, `__chkstk`, `_tls_index`, build-id +
+cache-UUID, `vk_image.drm_format_mod`, dan `vk_drm_syncobj.c` (yang di Mesa hanya
+di-build bila `dep_libdrm` ditemukan). Semua patch di-reset + apply ulang oleh
+`tools/patch-mesa.ps1`; tidak ada edit Mesa tangan yang tersisa.
+
+**Tembok sebenarnya sekarang: Valhall v9.** Build di atas menghasilkan backend
+**v6/v7 (JM, Bifrost) + v10 (CSF)**, sedangkan **PanVK upstream belum mendukung
+v9** (Mali-G57, GPU tablet ini):
+
+- `external/mesa/docs/drivers/panfrost.rst` (25.0.7) mengosongkan kolom
+  **Vulkan** untuk `G57` / `Valhall (v9)` — hanya OpenGL/GLES 3.1 + OpenCL.
+- `src/panfrost/vulkan/meson.build` hanya punya `jm_archs = [6, 7]`.
+- `jm/panvk_vX_cmd_draw.c` memakai descriptor Bifrost `RENDERER_STATE`, yang
+  tidak ada di genxml v9 (`v9.xml` punya `Shader Program`/`Draw`/`Tiler
+  Context`).
+- Mesa 24.3.0 menuliskannya langsung: *"panvk: Don't pretend we can compile for
+  v9."* (commit `2fcf9e4`).
+
+Patch `0004-panvk-enable-valhall-v9` dan `0006-panvk-valhall-jm-fb-preload`
+yang memaksa `libpanvk_v9` diparkir di `mesa/patches/experimental/` (tidak
+di-apply; lihat README di folder itu). Jadi DLL itu membuktikan **port + shim
+jalan end-to-end**, bukan menggerakkan GPU ini. Konsekuensinya ada di §8.
 
 ### 2.3 Shader — kompilasi vs cache
 
@@ -207,6 +228,14 @@ Ada dua jalur OpenGL:
 Zink adalah Gallium driver di dalam Mesa yang menerjemahkan GL ke Vulkan. Karena
 kita sudah harus punya Vulkan yang benar untuk DXVK/vkd3d, **Zink membuat OpenGL
 datang hampir otomatis**. Ini alasan urutan: Vulkan dulu, OpenGL menyusul.
+
+> **Caveat v9 (2026-11-09).** "Hampir otomatis" hanya berlaku bila ada driver
+> Vulkan untuk GPU-nya. Untuk **G57/v9** belum ada (§2.2), jadi Zink belum
+> memberi apa-apa di perangkat ini. Sebaliknya, **Gallium `panfrost` GL justru
+> mendukung v9** — justru itu driver v9 mainline. Artinya untuk tablet ini,
+> urutan realistis bisa **terbalik**: GL lewat Gallium panfrost dulu (render
+> nyata di GPU), Zink/Vulkan menyusul bila backend v9 ditulis. Keputusan ini
+> ada di §8 dan `ROADMAP.md`.
 
 ### 3.2 Yang perlu disiapkan
 
@@ -340,11 +369,18 @@ yang di-hard-code, jadi repo bisa di-build di mesin lain.
 
 ## 8. Risiko (dicatat supaya tidak jadi kejutan)
 
-- **Compiler shader di Windows ARM64.** BLOCKER terbesar jalur render. Mesa
-  belum mendukung build `aarch64-windows-msvc`; ini pekerjaan build-system +
-  port yang panjang.
-- **PanVK berasumsi Linux DRM.** Setiap asumsi (`/dev/dri`, GEM, syncobj,
-  dma-buf) harus dipetakan ke KMD kita atau diganti. Tidak ada yang otomatis.
+- **Valhall v9 tidak punya backend Vulkan.** ⚠️ BLOCKER render GPU untuk G57.
+  PanVK upstream mendukung v6/v7/v10, bukan v9 (§2.2). Terukur: DLL PanVK untuk
+  Windows ARM64 **sudah bisa di-link** (11.7 MB) — jadi ini bukan soal build,
+  tapi backend yang memang belum ada. Realokasi: **GL lewat Gallium `panfrost`
+  v9** bisa dirender di GPU tanpa backend baru; Vulkan-v9, kalau dikejar, adalah
+  backend JM baru (bukan port). Bila DX12 harus jalan tanpa GPU-vulkan, opsi
+  stopgap adalah **software Vulkan (lavapipe)** di bawah vkd3d.
+- **Build Windows ARM64.** ✅ Selesai: Meson + clang-cl + shim CRT-free + shim
+  libdrm (`mesa/README.md`). Bukan lagi risiko; jadi bukti.
+- **PanVK berasumsi Linux DRM.** ✅ Sebagian besar ditutup: `mali_drm.cpp`
+  (libdrm/libsyncobj/POSIX) + `cross/compat/*`; sisa WSI dan permukaan spesifik
+  yang belum.
 - **vkd3d-proton butuh fitur Vulkan modern.** ICD harus matang sebelum D3D12
   memberi hasil; jangan urutkan vkd3d terlalu dini.
 - **WSI/present.** Window present butuh jalur display (WDDM miniport atau blit
