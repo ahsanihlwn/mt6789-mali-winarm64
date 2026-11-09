@@ -24,7 +24,7 @@ inside the repository (`.venv\`, `build\`), and both are git-ignored.
 | **Link an ARM64 `.exe`/`.dll`** | ✅ C **and** C++ link now, via the CRT-free recipe + `runtime\` shim (below) |
 | Configure Mesa (panfrost) | ✅ pins `mesa-25.0.7`; configures with no CLC/LLVM |
 | **Link `vulkan_panfrost.dll` (ARM64)** | ✅ **11.7 MB**, `COFF-ARM64`, exports `vk_icdGetInstanceProcAddr` — see below |
-| **Link Gallium panfrost GL (ARM64)** | ✅ `libgallium_wgl.dll` **14.7 MB** + `opengl32.dll` 115 KB, `COFF-ARM64` |
+| **Link Gallium panfrost GL (ARM64)** | ✅ `libgallium_wgl.dll` **14.7 MB** + `opengl32.dll` 115 KB, `COFF-ARM64` — links, but the Windows frontend cannot select panfrost (see “Next steps”) |
 | **No VC++ runtime dependency** | ✅ all four DLLs import only in-box UCRT API sets + system DLLs (no `VCRUNTIME140`/`MSVCP140`) |
 
 ### Windows ARM64 PanVK links (2026-11-09)
@@ -333,11 +333,20 @@ The build works. What is left is the GPU itself:
    leaves the Vulkan column blank for G57, and `jm\panvk_vX_cmd_draw.c` hard-uses
    Bifrost's `RENDERER_STATE`, which v9 genxml does not have. Options, in
    `../GRAPHICS-STACK.md`:
-   - **OpenGL via Gallium Panfrost**, which *does* support v9 (`panfrost` Gallium
-     is the mainline v9 driver). This is the realizable hardware path, and it
-     now **builds**: `-Kind gl` produces `libgallium_wgl.dll` + `opengl32.dll`.
+   - ~~**OpenGL via Gallium Panfrost**~~ — **ruled out on Windows (2026-11-09).**
+     The Gallium `panfrost` driver *does* support v9, and `-Kind gl` *does* build
+     `libgallium_wgl.dll` + `opengl32.dll`, but Mesa's Windows frontend has no
+     path to it: `src/gallium/targets/wgl/wgl.c:123-137` selects only
+     `d3d12`/`zink`/`llvmpipe`/`softpipe`, and DRI/EGL-drm is disabled under
+     `with_platform_windows` (`meson.build:575`). The panfrost code is linked
+     but unreachable. Separately, the tablet's GDI reports **0 pixel formats**
+     (measured with `tools/gl-smoke/mali_gl_smoke.exe`), so `wglCreateContext()`
+     is unreachable for *any* Mesa driver. See `../DEPLOY.md` §3.
+   - **OpenGL via Zink** — the only remaining GL route on Windows, and it needs
+     the very v9 Vulkan driver that is missing.
    - **Software Vulkan (lavapipe)** to carry VKD3D/DX12 without the GPU.
-   - **Write a Valhall-JM v9 Vulkan backend** — a new backend, not a port.
+   - **Write a Valhall-JM v9 Vulkan backend** — a new backend, not a port. This
+     is now the single gate for Vulkan, Zink/OpenGL, DXVK and vkd3d alike.
 2. Once a driver renders, **validate on the tablet**: install the ICD JSON, run
    `windrv\umd\vulkan\test\mali_vk_smoke` / `vulkaninfo`, then `vkd3d`/`DXVK`.
 3. The `WDDM-PATH.md` work (render-only WDDM miniport, or a compute-accelerator

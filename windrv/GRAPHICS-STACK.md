@@ -117,8 +117,8 @@ Status terukur Jalur A (per `windrv/umd/README.md`):
 | Win32 WSI: surface, caps, format, present mode, lifecycle | idem (window tersembunyi) | **PASS** |
 | `vkEnumeratePhysicalDevices` tanpa KMD = 0 adapter, `VK_SUCCESS` | idem | **PASS** |
 | fill nol di GPU (WRITE_VALUE chain) | `mali_vk_smoke.exe` di tablet | **PASS (V3)** |
-| image/BO round-trip, update, semaphore, event, pipeline stub | `mali_vk_smoke.exe` di tablet | **dibangun; menunggu tablet** |
-| swapchain (image = BO KMD) + acquire + present blit GDI | `mali_vk_smoke.exe` di tablet | **dibangun; menunggu tablet** |
+| image/BO round-trip, update, semaphore, event, pipeline stub | `mali_vk_smoke.exe` di tablet | **PASS (V4)** |
+| swapchain (image = BO KMD) + acquire + present blit GDI | `mali_vk_smoke.exe` di tablet | **PASS (V5)** |
 
 Jadi Jalur A sudah **bukan** sekadar "bisa instance/device": permukaan Vulkan 1.0
 + 1.1-discovery + Win32 WSI (swapchain present lewat blit GDI) sudah lengkap untuk
@@ -181,9 +181,11 @@ in-box + system DLL.
 Satu konsekuensi packaging: `libgallium_wgl.dll` mengimpor `crc32` dari zlib
 subproject Mesa, jadi **`z-1.dll` (106 KB) wajib ikut** di sampingnya.
 
-**OpenGL juga sudah di-link** (target render v9 yang realistis):
+**OpenGL juga sudah di-link — tapi lihat §3.1 sebelum memakainya.**
 `tools\build-mesa.ps1 -Kind gl` menghasilkan `libgallium_wgl.dll` (14.7 MB) +
-`opengl32.dll` (115 KB), `COFF-ARM64`, juga tanpa dependensi VC++ runtime.
+`opengl32.dll` (115 KB), `COFF-ARM64`, juga tanpa dependensi VC++ runtime. Link-nya
+bersih, tetapi frontend WGL Windows **tidak punya jalur ke panfrost**, jadi
+artefak ini belum bisa merender (bukan masalah build — lihat koreksi di §3.1).
 
 Tembok CLC/LLVM juga **sudah dilewati**: checkout di-pin ke **`mesa-25.0.7`**
 (versi terbaru yang PanVK-nya belum butuh CLC), dan patch portabilitas
@@ -246,25 +248,45 @@ Ada dua jalur OpenGL:
 
 | Jalur | Cara kerja | Biaya |
 | --- | --- | --- |
-| **Zink** (rekomendasi) | OpenGL → Vulkan ICD kita | **gratis** begitu Vulkan lengkap (shader/pipeline) |
-| Gallium `panfrost` GL | OpenGL → panfrost langsung | jalur lain, lebih banyak kode khusus |
+| **Zink** (satu-satunya jalan) | OpenGL → Vulkan ICD kita | **gratis** begitu Vulkan lengkap (shader/pipeline) |
+| ~~Gallium `panfrost` GL~~ | OpenGL → panfrost langsung | **tidak tersedia di Windows** (lihat di bawah) |
 
 Zink adalah Gallium driver di dalam Mesa yang menerjemahkan GL ke Vulkan. Karena
 kita sudah harus punya Vulkan yang benar untuk DXVK/vkd3d, **Zink membuat OpenGL
 datang hampir otomatis**. Ini alasan urutan: Vulkan dulu, OpenGL menyusul.
 
-> **Caveat v9 (2026-11-09).** "Hampir otomatis" hanya berlaku bila ada driver
-> Vulkan untuk GPU-nya. Untuk **G57/v9** belum ada (§2.2), jadi Zink belum
-> memberi apa-apa di perangkat ini. Sebaliknya, **Gallium `panfrost` GL justru
-> mendukung v9** — justru itu driver v9 mainline. Artinya untuk tablet ini,
-> urutan realistis bisa **terbalik**: GL lewat Gallium panfrost dulu (render
-> nyata di GPU), Zink/Vulkan menyusul bila backend v9 ditulis. Keputusan ini
-> ada di §8 dan `ROADMAP.md`.
+> **Koreksi penting (2026-11-09, terukur di tablet).** Rencana "GL lewat Gallium
+> `panfrost`" **tidak bisa dipakai di Windows** — ini bukan soal build, tapi soal
+> frontend Mesa-nya:
 >
-> Status 2026-11-09: jalur Gallium panfrost itu **sudah di-link** —
-> `tools\build-mesa.ps1 -Kind gl` → `libgallium_wgl.dll` + `opengl32.dll`
-> (ARM64, UCRT in-box saja). Yang belum: winsys DRM → KMD. WSI present untuk
-> ICD Jalur A sudah ada (lihat §3.2).
+> 1. Frontend WGL/EGL Windows hanya mengenal **empat** Gallium driver.
+>    `external/mesa/src/gallium/targets/wgl/wgl.c:123-137` menyusun daftar
+>    `GALLIUM_DRIVER` → `d3d12`, `zink`, `llvmpipe`, `softpipe`. **`panfrost`
+>    tidak ada di sana**; `wgl_screen_create_by_name()` tidak pernah bisa
+>    menghasilkan screen panfrost. `libgallium_wgl.dll` 14.7 MB yang kita link
+>    memang **berisi** kode panfrost, tetapi tidak ada jalan dari frontend ke
+>    sana — jadi ia gagal fungsi, bukan gagal link.
+> 2. Jalan lain (DRI/EGL `platform_drm`/`surfaceless`, GBM) juga tertutup:
+>    `meson.build:575` mewajibkan `with_dri` **nonaktif** saat
+>    `with_platform_windows`, jadi `libgallium_dri` (dan `platform_device.c`/
+>    `platform_surfaceless.c` di `src/egl/meson.build:95-98`) tidak di-build.
+> 3. EGL di Windows (`src/egl/meson.build:138-144`) hanya `drivers/wgl/egl_wgl.c`
+>    dan **me-link `libgallium_wgl` yang sama** → himpunan driver yang sama.
+>
+> Jadi **satu-satunya OpenGL yang mungkin di Mali ini adalah Zink di atas Vulkan
+> ICD** — dan itu artinya backend Valhall v9 (§2.2) adalah prasyarat OpenGL juga,
+> bukan cuma Vulkan. Kesimpulannya masuk ke §8.
+
+> **Blocker kedua, terpisah: GDI tidak menyediakan pixel format apa pun.**
+> Diuji di tablet lewat `tools\gl-smoke\mali_gl_smoke.exe` (G1–G5): `gdi32`
+> `DescribePixelFormat()` mengembalikan **0** format di window DC **dan** screen
+> DC, dan `ChoosePixelFormat()` selalu 0 untuk tujuh deskriptor (window/single,
+> double, 24/32-bit, bitmap). Penyebabnya: tidak ada display driver yang
+> mendaftarkan ICD OpenGL (tablet masih memakai basic display adapter; rung L5 di
+> `DISPLAY-ANDROID.md` belum jalan). Konsekuensinya `wglCreateContext()` tidak
+> bisa dipanggil sama sekali — **untuk semua driver Mesa**, termasuk llvmpipe.
+> Mendaftarkan ICD lewat registry display-class (`OpenGLDriverName`) butuh admin
+> dan mengubah sistem, jadi tidak dipakai di proyek ini.
 
 ### 3.2 Yang perlu disiapkan
 
@@ -403,10 +425,21 @@ yang di-hard-code, jadi repo bisa di-build di mesin lain.
 - **Valhall v9 tidak punya backend Vulkan.** ⚠️ BLOCKER render GPU untuk G57.
   PanVK upstream mendukung v6/v7/v10, bukan v9 (§2.2). Terukur: DLL PanVK untuk
   Windows ARM64 **sudah bisa di-link** (11.7 MB) — jadi ini bukan soal build,
-  tapi backend yang memang belum ada. Realokasi: **GL lewat Gallium `panfrost`
-  v9** bisa dirender di GPU tanpa backend baru; Vulkan-v9, kalau dikejar, adalah
-  backend JM baru (bukan port). Bila DX12 harus jalan tanpa GPU-vulkan, opsi
-  stopgap adalah **software Vulkan (lavapipe)** di bawah vkd3d.
+  tapi backend yang memang belum ada.
+- **"GL lewat Gallium panfrost" gugur (2026-11-09).** Klaim lama bahwa panfrost
+  GL adalah "target render v9 yang realistis" **salah di Windows**: frontend
+  WGL/EGL Windows hanya mendukung `d3d12`/`zink`/`llvmpipe`/`softpipe`
+  (`src/gallium/targets/wgl/wgl.c:123-137`), dan DRI/EGL-drm nonaktif saat
+  `with_platform_windows` (`meson.build:575`). Kode panfrost memang ter-link di
+  `libgallium_wgl.dll` tetapi tidak bisa dijangkau (detail + bukti di §3.1).
+  **Akibat: OpenGL di Mali juga bergantung pada backend Valhall v9**, lewat Zink
+  di atas Vulkan ICD — bukan jalur mandiri.
+- **Tidak ada pixel format GDI di perangkat ini (2026-11-09).** `gdi32` memberi
+  **0** format di window DC dan screen DC (diukur dengan
+  `mali_gl_smoke.exe` G1–G5), karena tidak ada display driver yang mendaftarkan
+  ICD OpenGL (rung L5 belum jalan). Tanpa itu `wglCreateContext()` tidak bisa
+  dipanggil untuk driver Mesa mana pun. Jadi WGL adalah jalan buntu sampai L5
+  ada; jalur render nyata harus lewat Vulkan (loader Khronos tidak butuh GDI).
 - **Build Windows ARM64.** ✅ Selesai: Meson + clang-cl + shim CRT-free + shim
   libdrm (`mesa/README.md`). Bukan lagi risiko; jadi bukti.
 - **PanVK berasumsi Linux DRM.** ✅ Sebagian besar ditutup: `mali_drm.cpp`

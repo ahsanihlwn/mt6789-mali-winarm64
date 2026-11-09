@@ -17,7 +17,8 @@
     umd\build\mali_vk_icd.dll + mali_g57_icd.json   Jalur A Vulkan ICD
     umd\build\mali_vk_smoke.exe                     Jalur A smoke test
     mesa\...\vulkan_panfrost.dll                    Jalur B Vulkan (links, no v9)
-    mesa\...\libgallium_wgl.dll + opengl32.dll      Gallium panfrost OpenGL (v9)
+    mesa\...\libgallium_wgl.dll + opengl32.dll      Mesa GL artefacts (see DEPLOY §3)
+    mesa\build\gl-smoke\mali_gl_smoke.exe           offscreen GL probe (DEPLOY §3)
     mesa\...\z-1.dll                                zlib, required by libgallium_wgl
 
   It only copies what already exists; a missing file is reported, not created.
@@ -50,6 +51,7 @@ $items = [ordered]@{
     'vulkan_panfrost.dll'   = @(Join-Path $mesa 'build\mesa\src\panfrost\vulkan\vulkan_panfrost.dll')
     'libgallium_wgl.dll'    = @(Join-Path $mesa 'build\mesa-gl\src\gallium\targets\wgl\libgallium_wgl.dll')
     'opengl32.dll'          = @(Join-Path $mesa 'build\mesa-gl\src\gallium\targets\libgl-gdi\opengl32.dll')
+    'mali_gl_smoke.exe'     = @(Join-Path $mesa 'build\gl-smoke\mali_gl_smoke.exe')
     'z-1.dll'               = @(
         (Join-Path $mesa 'build\mesa-gl\subprojects\zlib-1.3.1\z-1.dll'),
         (Join-Path $mesa 'build\mesa\subprojects\zlib-1.3.1\z-1.dll')

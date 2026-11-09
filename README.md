@@ -36,11 +36,12 @@ driver only ever owns the GPU core itself.
 | Job-chain builder `mali_jc` + host unit test | ✅ 26/26 checks pass on x64 |
 | Vulkan ICD `windrv/umd/vulkan` | ⚠️ full Vulkan 1.0 + 1.1-discovery object model, transfers, and Win32 WSI (swapchain present via GDI blit); no shader execution |
 | Vulkan ICD host self-test (`tools\run-host-tests.ps1`) | ✅ entry points + Win32 WSI resolve on x64 |
-| Vulkan ICD device-object smoke test (V4a) | ⏳ builds for ARM64; awaiting tablet to run |
-| Vulkan ICD Win32 WSI smoke stage (V5) | ⏳ builds for ARM64; awaiting tablet to run |
-| Vulkan ICD (Mesa PanVK port, render) | ❌ not started |
+| Vulkan ICD device-object smoke test (V4a) | ✅ PASS on the tablet (2026-11-09) |
+| Vulkan ICD Win32 WSI smoke stage (V5) | ✅ PASS on the tablet (swapchain BOs + GDI present) |
+| Vulkan ICD (Mesa PanVK port, render) | ❌ links, but no Valhall v9 backend upstream |
 | D3D12 / DXVK / vkd3d-proton path | ❌ depends on a shader-capable ICD |
-| OpenGL (Zink) path | ❌ depends on a shader-capable ICD |
+| OpenGL via Zink | ❌ depends on a shader-capable ICD |
+| OpenGL via Gallium `panfrost` | ❌ not reachable on Windows (Mesa WGL has no panfrost path; GDI exposes 0 pixel formats) |
 
 ## Architecture
 

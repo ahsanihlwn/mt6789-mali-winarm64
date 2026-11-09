@@ -190,14 +190,22 @@ usable:
     ARM64 CRT needed, and no VC++ redistributable dependency
     (`VCRUNTIME140`/`MSVCP140` eliminated from all four DLLs).
   - [x] Build the Gallium panfrost OpenGL pair: `libgallium_wgl.dll` (14.7 MB) +
-    `opengl32.dll` (115 KB), same recipe (`build-mesa.ps1 -Kind gl`). This is the
-    v9 render path; `z-1.dll` must ship alongside it.
+    `opengl32.dll` (115 KB), same recipe (`build-mesa.ps1 -Kind gl`); `z-1.dll`
+    must ship alongside it.
+  - [x] **Prove whether that GL pair can render — it cannot (2026-11-09).** An
+    offscreen probe (`tools/gl-smoke/mali_gl_smoke.exe`) measured **0 GDI pixel
+    formats** on the tablet, so `wglCreateContext()` is unreachable for any Mesa
+    driver (no display-driver OpenGL ICD; L5 not done). And even with a format,
+    Mesa's Windows frontend only selects `d3d12`/`zink`/`llvmpipe`/`softpipe` —
+    never `panfrost` (`src/gallium/targets/wgl/wgl.c:123-137`). See
+    [`DEPLOY.md`](DEPLOY.md) §3 and [`GRAPHICS-STACK.md`](GRAPHICS-STACK.md) §3.1.
   - [ ] **The v9 gap.** Upstream PanVK supports Valhall v6/v7 (Bifrost JM) and
     v10 (CSF), **not v9** (G57). So the linked DLL does not drive this GPU.
+    This is now the **single gate** for Vulkan, Zink/OpenGL, DXVK and vkd3d.
     Options (see [`GRAPHICS-STACK.md`](GRAPHICS-STACK.md) §2.2/§8):
-    (a) **Gallium `panfrost` OpenGL** — mainline *does* support v9; render in GL
-    first; (b) software Vulkan (lavapipe) under vkd3d as a stopgap; (c) write a
-    Valhall-JM v9 Vulkan backend (new backend, not a port).
+    (a) write a Valhall-JM v9 Vulkan backend (new backend, not a port) — the only
+    route that unblocks everything; (b) software Vulkan (lavapipe) under vkd3d as
+    a stopgap for DX12 correctness, not speed.
   - [x] **Win32 WSI** (`VK_KHR_surface` + `VK_KHR_win32_surface` +
     `VK_KHR_swapchain`): surface binding, client-area caps, BGRA formats, FIFO,
     swapchain images as KMD BOs, and `vkQueuePresentKHR` as a GDI
@@ -243,7 +251,7 @@ usable:
   toolchain.
 - [x] `tools\stage-testkit.ps1` collects the deployable set into `out\testkit\`
       with a SHA-256 manifest, and [`DEPLOY.md`](DEPLOY.md) is the ordered
-      checklist (KMD → Jalur A ICD → Gallium panfrost GL → D3D overrides).
+      checklist (KMD → Jalur A ICD → GL probe → D3D overrides).
 
 **Signing (Windows 11 ARM64 full install)**
 - Dev: Secure Boot off + `bcdedit /set testsigning on`, self-signed driver.
@@ -272,9 +280,11 @@ Written by us:
 
 - ✅ **Porting PanVK off DRM is done** (shim `mali_drm.cpp` + `cross/compat/*`),
   and the Windows ARM64 DLL links. The remaining render risk is **v9 having no
-  Vulkan backend upstream** — a real backend to write, not a build problem. The
-  lower-risk render path for this GPU is Gallium `panfrost` OpenGL (v9 is its
-  mainline target).
+  Vulkan backend upstream** — a real backend to write, not a build problem.
+  The "lower-risk GL fallback" (Gallium `panfrost`) is **not available on
+  Windows**: Mesa's WGL/EGL frontend cannot select it, and the tablet's GDI
+  exposes 0 pixel formats (measured, `DEPLOY.md` §3). So the v9 Vulkan backend
+  is the single gate for every accelerated API.
 - ✅ Mesa's ARM64-Windows build is now proven here: `vulkan_panfrost.dll`,
   cross-compiled with clang-cl and linked CRT-free.
 - Win32 WSI (swapchain present) is done for Jalur A (GDI blit, L2); vblank waits

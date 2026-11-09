@@ -68,8 +68,8 @@ cd vulkan
 `build-icd.ps1` also emits `build\mali_vk_smoke.exe`, a CRT-free ARM64 test that
 links the ICD's import library and resolves every entry point through
 `vkGetInstanceProcAddr`, so no Vulkan loader is needed to run it. On the target
-it walks V1–V5 from `../GRAPHICS-STACK.md` (V1–V3 verified on silicon; the V4
-and V5 stages are built but have not been run on the tablet yet) and prints:
+it walks V1–V5 from `../GRAPHICS-STACK.md` (all five **validated on silicon**,
+2026-11-09) and prints:
 
 ```
 V1 instance created
