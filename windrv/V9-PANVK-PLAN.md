@@ -189,6 +189,21 @@ entirely and `with_llvm` is no longer forced (`meson.build:1056-1068`), but it
 then requires **prebuilt native** `mesa_clc.exe` *and* `vtn_bindgen2.exe` on
 `PATH`.
 
+Measured on this machine (2026-11-09): **WSL2 Ubuntu 26.04.1 is installed** and
+already carries clang/LLVM 21.1.8 with the `spirv`, `spirv32` and `spirv64`
+targets, plus `llvm-21-dev`, `libclang-21-dev`, `meson`, `ninja`, `cmake` and
+`pkg-config`. Ubuntu 26.04 also offers the three pieces this host lacks —
+`libclc-21-dev`, `libllvmspirvlib-21-dev` (SPIRV-LLVM-Translator) and
+`spirv-tools-dev` — and they can be pulled with `apt-get download` and unpacked
+with `dpkg -x` **inside `external/`**: no install, no root, nothing changed
+outside the project folder.
+
+That opens a third route, and it is by far the cheapest: run `mesa_clc` and
+`vtn_bindgen2` as **Linux host tools** under WSL and feed the generated
+`libpan_v*.cpp` / `.h` into the Windows build. Both are build-time-only tools and
+their output is plain C++ with no ABI dependency, which is exactly what a normal
+cross build does — the host half just runs on Linux instead of Windows.
+
 ## 4. Risks / open questions
 
 - **Windows, not Android.** Every published result is on arm64 **Android**
@@ -226,13 +241,22 @@ Steps 1–3 are **done** — results in §3.2.
 
 Still open, in order:
 
-4. **Decide the CLC toolchain route (see 3.3)** — the gating decision now:
-   - (a) portable LLVM+Clang SDK extracted into `external/` (self-contained and
-     matching how the WDK and winflexbison are already fetched, but it also needs
-     SPIRV-Tools, SPIRV-LLVM-Translator and libclc built), or
-   - (b) prebuilt native `mesa_clc.exe` + `vtn_bindgen2.exe` as host tools with
-     `-Dmesa-clc=system -Dgallium-rusticl=false` (cheap, but the binaries arrive
-     from outside and must be trusted and version-checked).
+4. **Get the CLC toolchain (§3.3)** — the gating decision now. Options, in the
+   order I would try them:
+   - (a) **WSL pre-generation (recommended).** `apt-get download` +
+     `dpkg -x libclc-21-dev libllvmspirvlib-21-dev spirv-tools-dev` into
+     `external/`, build `mesa_clc` and `vtn_bindgen2` as Linux host tools, run
+     them over `src/panfrost/libpan/*.cl`, and have the Windows build consume the
+     generated `libpan_v*.cpp/.h` via a `libpan-pregen` Meson option plus one
+     small patch. Nothing is installed and nothing outside the repo changes.
+   - (b) portable LLVM+Clang SDK extracted into `external/` and the whole CLC
+     stack built natively with MSVC. Fully Windows-native and reproducible, but
+     it means building SPIRV-Tools, SPIRV-LLVM-Translator and libclc on MSVC —
+     all Linux-first projects — and the official Windows LLVM builds do not
+     include the `spirv` target that VS's clang lacks.
+   - (c) prebuilt `mesa_clc.exe` + `vtn_bindgen2.exe`. Checked: `mesa-dist-win`
+     (up to tag `26.2.6`) does **not** ship `mesa_clc`, so there is no ready
+     source. Keep as a fallback only.
 5. Add the four `DRM_IOCTL_PANFROST_*` cases to
    `windrv/mesa/runtime/mali_drm.cpp`.
 6. Rebase the patches for real and update `patch-mesa.ps1` — it currently starts
