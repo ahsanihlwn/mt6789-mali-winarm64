@@ -187,15 +187,26 @@ subproject Mesa, jadi **`z-1.dll` (106 KB) wajib ikut** di sampingnya.
 bersih, tetapi frontend WGL Windows **tidak punya jalur ke panfrost**, jadi
 artefak ini belum bisa merender (bukan masalah build — lihat koreksi di §3.1).
 
-Tembok CLC/LLVM juga **sudah dilewati**: checkout di-pin ke **`mesa-25.0.7`**
-(versi terbaru yang PanVK-nya belum butuh CLC), dan patch portabilitas
-`windrv/mesa/patches/0001..0011` (9 aktif; `0004`/`0006` diparkir) menutup sisa
-celah Windows — libdrm + `mmap`/`poll`/syncobj, `sysinfo`, `sched_yield`,
-`__chkstk`, `_tls_index`, build-id + cache-UUID, `vk_image.drm_format_mod`,
-`vk_drm_syncobj.c` (yang di Mesa hanya di-build bila `dep_libdrm` ditemukan),
-serta HANDLE renderonly/panfrost winsys (`0010`/`0011`). Semua patch di-reset +
-apply ulang oleh `tools/patch-mesa.ps1`; tidak ada edit Mesa tangan yang
-tersisa.
+Tembok CLC/LLVM juga **sudah dilewati**. Dulu dilewati dengan mem-pin ke
+**`mesa-25.0.7`** (versi terbaru yang PanVK-nya belum butuh CLC) — tetapi itu
+juga menghapus v9, jadi solusi itu **sudah ditinggalkan**. Checkout sekarang
+di-pin ke **`feeadb5f` (26.3.0-devel)** + patch stack FourFectVK, dan CLC
+dilewati dengan **shader library yang di-pregenerate**: `src/panfrost/libpan` +
+`src/poly/cl` dihasilkan di Linux (`tools/gen-libpan-wsl.sh`), di-commit di
+`windrv/mesa/pregen/`, lalu dipakai lewat `-Dpanfrost-pregen=true`
+(patch `0008`). Dengan itu `-Dllvm=disabled` benar-benar bisa dan `mesa_clc`
+tidak pernah masuk build graph.
+
+Patch portabilitas Windows sekarang **`0001..0008`** (kontigu, 5 patch v9
+sebagai base layer terpisah di `patches-v9/fourfectvk/`): bit-field `bi_index`,
+libdrm + `mmap`/`poll`/syncobj, DRM ids, `vk_image.drm_format_mod`,
+build-id/`driver_build_sha`, `vk_drm_syncobj.c` (yang di Mesa hanya di-build
+bila `dep_libdrm` ditemukan), HANDLE renderonly winsys, dan `panfrost-pregen`.
+Patch cache-UUID (`0008` lama) **dihapus** karena `cache_uuid` sekarang BLAKE3
+atas `driver_build_sha`, dan patch winsys Gallium (`0011` lama) dibuang karena
+tidak terjangkau di Windows. Semua patch di-reset + apply ulang oleh
+`tools/patch-mesa.ps1` (base layer → patch proyek → stage `pregen/`); tidak ada
+edit Mesa tangan yang tersisa.
 
 **Tembok sebenarnya: Valhall v9 — tapi tidak lagi "tidak ada backend".**
 Build 25.0.7 di atas menghasilkan backend **v6/v7 (JM, Bifrost) + v10 (CSF)**;
@@ -235,6 +246,27 @@ dan `0008` jadi usang. **Blocker baru:** Mesa ≥25.1 menambah `src/panfrost/
 libpan/` (kernel OpenCL helper) yang wajib dikompilasi `mesa_clc`, dan
 `mesa_clc` butuh LLVM + Clang + SPIRV-Tools + SPIRV-LLVM-Translator + libclc.
 Detail, tabel, dan opsi toolchain: [`V9-PANVK-PLAN.md`](V9-PANVK-PLAN.md) §3.2/§3.3.
+
+**Pembaruan 2026-11-10 — dua blocker di atas sudah tutup, satu blocker baru.**
+
+1. **CLC/`libpan`: SELESAI.** `tools/gen-libpan-wsl.sh` menghasilkan seluruh
+   artefak (10 arsitektur + `libpoly`) di WSL dengan `apt-get download` +
+   `dpkg -x` (tidak ada paket yang di-install); hasilnya di-commit di
+   `windrv/mesa/pregen/` (42 file, 7,1 MB, `SHA256SUMS`) dan dipakai lewat
+   `-Dpanfrost-pregen=true`. Build native dari tree final dengan
+   `-Dllvm=disabled` menghasilkan `libvulkan_panfrost.so` 24 MB tanpa satu pun
+   referensi `mesa_clc`; regenerate menghasilkan byte yang identik.
+   Rincian: `V9-PANVK-PLAN.md` §3.4.
+2. **Patch stack: SELESAI.** Delapan patch proyek sudah rebase dan apply bersih
+   dari checkout pristine (`patch-mesa.ps1` diverifikasi ulang).
+3. **Blocker baru: kontrak kernel.** Backend v9 dari stack **tidak** memakai
+   `pan_kmod` panfrost; `jm/panvk_vX_gpu_queue.c` memanggil
+   `ioctl(fd, KBASE_IOCTL_JOB_SUBMIT, ...)` dengan array **atoms** dan memakai
+   `MEM_*`, `SET_FLAGS`, `KCPU_QUEUE_*`, `VERSION_CHECK_JM` (≥ 11). Artinya
+   pilihan "Option B (pakai shim panfrost kmod)" **gugur** — dengan
+   `-Dpanfrost-kmds=panfrost` file itu bahkan tidak bisa dikompilasi. Shim harus
+   berbicara **kbase UAPI**; tiga rute (shim user-mode / KMD / tulis ulang stack)
+   dibahas di `V9-PANVK-PLAN.md` §3.5, rekomendasinya rute pertama.
 
 ### 2.3 Shader — kompilasi vs cache
 
@@ -450,9 +482,11 @@ yang di-hard-code, jadi repo bisa di-build di mesin lain.
   **Diperbarui 2026-11-09:** backend v9 ada di luar pin kita —
   `Noysz/panvk-g99-jm` (FourFectVK) memelihara patch stack v9 JM untuk G57 MC2
   di atas Mesa 26.3.0-devel, dengan CTS + bring-up DXVK. Baca
-  [`V9-PANVK-PLAN.md`](V9-PANVK-PLAN.md). Risiko bergeser dari "harus menulis
-  backend" ke "rebase 9 patch Windows + 5 grup patch upstream, dan hasilnya baru
-  terbukti di Android, bukan Windows ARM64".
+  [`V9-PANVK-PLAN.md`](V9-PANVK-PLAN.md).
+  **Diperbarui 2026-11-10:** pin sudah pindah ke stack itu, patch stack +
+  8 patch Windows apply bersih, dan build v9 tanpa LLVM/CLC **sudah terbukti**
+  (§3.4 rencana). Risiko yang tersisa bukan build, melainkan **kontrak kernel
+  kbase** yang dipanggil langsung oleh jalur submit v9 (§3.5 rencana).
 - **"GL lewat Gallium panfrost" gugur (2026-11-09).** Klaim lama bahwa panfrost
   GL adalah "target render v9 yang realistis" **salah di Windows**: frontend
   WGL/EGL Windows hanya mendukung `d3d12`/`zink`/`llvmpipe`/`softpipe`

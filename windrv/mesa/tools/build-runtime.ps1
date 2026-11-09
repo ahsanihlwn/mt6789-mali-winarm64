@@ -74,13 +74,18 @@ try {
     # UCRT, so /MD is also the honest tag.
 
     # Include roots for the libdrm/Win32 shim: its own compat headers, the KMD
-    # ABI, the UMD winsys, and Mesa's drm-uapi headers.
+    # ABI, the UMD winsys, and Mesa's drm-uapi headers. The v9 tree is canonical;
+    # keep the pre-v9 checkout as a fallback for machines that still have one.
+    $mesaInc = Join-Path (Split-Path -Parent $windrv) 'external\mesa-v9\include'
+    if (-not (Test-Path -LiteralPath $mesaInc)) {
+        $mesaInc = Join-Path (Split-Path -Parent $windrv) 'external\mesa\include'
+    }
     $shimInc = @(
         '-I', (Join-Path $mesaRoot 'cross\compat'),
         '-I', (Join-Path $mesaRoot 'cross'),
         '-I', (Join-Path $windrv 'kmd\include'),
         '-I', (Join-Path $windrv 'umd\include'),
-        '-I', (Join-Path (Split-Path -Parent $windrv) 'external\mesa\include')
+        '-I', $mesaInc
     )
 
     $sources  = @('mali_cxxrt.cpp', 'mali_posix.cpp', 'mali_crt_exe.cpp', 'mali_crt_dll.cpp',

@@ -12,6 +12,10 @@
 *.md   text eol=lf
 *.py   text eol=lf
 
+# Patches are applied to LF sources (Mesa) with `git apply`; a CRLF working
+# copy makes every context line fail to match.
+*.patch text eol=lf
+
 # Binary artifacts must never be line-ending converted.
 *.sys  binary
 *.exe  binary

@@ -1,28 +1,28 @@
 diff --git a/src/panfrost/vulkan/panvk_instance.c b/src/panfrost/vulkan/panvk_instance.c
-index 062d0ebd..8afcec0d 100644
+index 8c40b5c..27d4819 100644
 --- a/src/panfrost/vulkan/panvk_instance.c
 +++ b/src/panfrost/vulkan/panvk_instance.c
-@@ -9,8 +9,11 @@
-  * SPDX-License-Identifier: MIT
-  */
+@@ -16,6 +16,11 @@
+ #include "util/os_misc.h"
+ #include "util/u_call_once.h"
  
++#ifdef _WIN32
 +#include <string.h>
-+
- #include "util/build_id.h"
- #include "util/mesa-sha1.h"
 +#include "git_sha1.h"
- 
- #include "vk_alloc.h"
- #include "vk_log.h"
-@@ -155,6 +158,7 @@ panvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
- 
-    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO);
++#endif
++
+ #if defined(HAVE_PAN_KMOD_KBASE)
+ #include <limits.h>
+ #include <stdio.h>
+@@ -289,6 +294,7 @@ panvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
+    panvk_debug_init();
+    pan_trace_init();
  
 +#ifdef HAVE_DL_ITERATE_PHDR
     const struct build_id_note *note =
        build_id_find_nhdr_for_addr(panvk_CreateInstance);
     if (!note) {
-@@ -167,6 +171,7 @@ panvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
+@@ -301,6 +307,7 @@ panvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
        return panvk_errorf(NULL, VK_ERROR_INITIALIZATION_FAILED,
                            "build-id too short.  It needs to be a SHA");
     }
@@ -30,12 +30,12 @@ index 062d0ebd..8afcec0d 100644
  
     pAllocator = pAllocator ?: vk_default_allocator();
     instance = vk_zalloc(pAllocator, sizeof(*instance), 8,
-@@ -206,7 +211,20 @@ panvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
+@@ -339,7 +346,20 @@ panvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
     VG(VALGRIND_CREATE_MEMPOOL(instance, 0, false));
  
-    STATIC_ASSERT(sizeof(instance->driver_build_sha) == SHA1_DIGEST_LENGTH);
+    STATIC_ASSERT(sizeof(instance->driver_build_sha) == BLAKE3_KEY_LEN);
 +#ifdef HAVE_DL_ITERATE_PHDR
-    memcpy(instance->driver_build_sha, build_id_data(note), SHA1_DIGEST_LENGTH);
+    copy_build_id_to_sha1(instance->driver_build_sha, note);
 +#else
 +   /* Windows has no ELF build-id note (util/build_id.h only declares these
 +    * helpers under HAVE_DL_ITERATE_PHDR). Derive a stable, reproducible driver

@@ -1,4 +1,4 @@
-﻿diff --git a/src/gallium/auxiliary/renderonly/renderonly.h b/src/gallium/auxiliary/renderonly/renderonly.h
+diff --git a/src/gallium/auxiliary/renderonly/renderonly.h b/src/gallium/auxiliary/renderonly/renderonly.h
 index de22b37c..6d6fbcc7 100644
 --- a/src/gallium/auxiliary/renderonly/renderonly.h
 +++ b/src/gallium/auxiliary/renderonly/renderonly.h

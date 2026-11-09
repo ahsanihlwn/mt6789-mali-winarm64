@@ -1,8 +1,8 @@
 diff --git a/src/panfrost/vulkan/panvk_physical_device.c b/src/panfrost/vulkan/panvk_physical_device.c
-index 373f084..0fdfcec 100644
+index 0687818..7556450 100644
 --- a/src/panfrost/vulkan/panvk_physical_device.c
 +++ b/src/panfrost/vulkan/panvk_physical_device.c
-@@ -93,6 +93,14 @@ get_drm_device_ids(struct panvk_physical_device *device,
+@@ -405,6 +405,14 @@ get_drm_device_ids(struct panvk_physical_device *device,
                     const struct panvk_instance *instance,
                     drmDevicePtr drm_device)
  {
@@ -17,11 +17,11 @@ index 373f084..0fdfcec 100644
     struct stat st;
  
     if (stat(drm_device->nodes[DRM_NODE_RENDER], &st)) {
-@@ -112,6 +120,7 @@ get_drm_device_ids(struct panvk_physical_device *device,
+@@ -424,6 +432,7 @@ get_drm_device_ids(struct panvk_physical_device *device,
     }
  
     return VK_SUCCESS;
 +#endif
  }
  
- static int
+ static void

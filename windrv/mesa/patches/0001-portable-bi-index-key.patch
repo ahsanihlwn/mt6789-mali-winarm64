@@ -1,8 +1,8 @@
-diff --git a/src/panfrost/compiler/bifrost_compile.c b/src/panfrost/compiler/bifrost_compile.c
-index 4a2712c..e2d9522 100644
---- a/src/panfrost/compiler/bifrost_compile.c
-+++ b/src/panfrost/compiler/bifrost_compile.c
-@@ -149,10 +149,20 @@ bi_emit_jump(bi_builder *b, nir_jump_instr *instr)
+diff --git a/src/panfrost/compiler/bifrost/bifrost_compile.c b/src/panfrost/compiler/bifrost/bifrost_compile.c
+index eadc537..711131c 100644
+--- a/src/panfrost/compiler/bifrost/bifrost_compile.c
++++ b/src/panfrost/compiler/bifrost/bifrost_compile.c
+@@ -114,10 +114,20 @@ bi_emit_jump(bi_builder *b, nir_jump_instr *instr)
  static uint64_t
  bi_index_to_key(bi_index idx)
  {

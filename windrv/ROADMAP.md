@@ -200,18 +200,23 @@ usable:
     Mesa's Windows frontend only selects `d3d12`/`zink`/`llvmpipe`/`softpipe` —
     never `panfrost` (`src/gallium/targets/wgl/wgl.c:123-137`). See
     [`DEPLOY.md`](DEPLOY.md) §3 and [`GRAPHICS-STACK.md`](GRAPHICS-STACK.md) §3.1.
-  - [ ] **The v9 gap — downgraded from "write a backend" to "port a stack"
-    (2026-11-09).** Mesa 25.0.7 (our pin) has no v9 PanVK, but the backend now
+  - [x] **The v9 gap — closed as a build problem, opened as a kernel one
+    (2026-11-10).** Mesa 25.0.7 (our old pin) has no v9 PanVK, but the backend
     exists: `Noysz/panvk-g99-jm` (FourFectVK) maintains a v9 **Job Manager**
     PanVK patch stack for **G57 MC2 / Helio G99 (MT6789)** on upstream Mesa
     26.3.0-devel, validated with CTS (5,658 cases, 14 fail) and DXVK bring-up on
-    Android/Winlator. Plan, patch order, winsys options (adopt Mesa's `pan_kmod`
-    kbase backend vs. keep our libdrm shim) and risks:
-    [`V9-PANVK-PLAN.md`](V9-PANVK-PLAN.md). This is still the gate for Vulkan,
-    Zink/OpenGL, DXVK and vkd3d, but it is now bounded work: rebase Mesa, port
-    the 9 Windows patches, apply the 5 upstream patch groups, re-link for Windows
-    ARM64 and prove it on the tablet. (b) software Vulkan (lavapipe) under vkd3d
-    remains a stopgap for DX12 correctness, not speed.
+    Android/Winlator. Our tree is now pinned there, the 5 stack patches + 8
+    project patches apply cleanly from a pristine checkout, and the panfrost
+    shader libraries are pregenerated — a v9 PanVK builds with
+    `-Dllvm=disabled` (`V9-PANVK-PLAN.md` §3.4).
+    **What is left is the kernel contract:** the stack's v9 submit path calls
+    `KBASE_IOCTL_JOB_SUBMIT`/`MEM_*`/`SET_FLAGS`/`KCPU_QUEUE_*` directly, so the
+    Windows shim must speak the kbase UAPI (our previous "keep the panfrost
+    kmod" choice does not compile against it — `V9-PANVK-PLAN.md` §3.5).
+    Still the gate for Vulkan, Zink/OpenGL, DXVK and vkd3d, but now bounded:
+    implement the kbase JM subset in `mali_drm.cpp`, re-link for Windows ARM64,
+    prove on the tablet. (b) software Vulkan (lavapipe) under vkd3d remains a
+    stopgap for DX12 correctness, not speed.
   - [x] **Win32 WSI** (`VK_KHR_surface` + `VK_KHR_win32_surface` +
     `VK_KHR_swapchain`): surface binding, client-area caps, BGRA formats, FIFO,
     swapchain images as KMD BOs, and `vkQueuePresentKHR` as a GDI

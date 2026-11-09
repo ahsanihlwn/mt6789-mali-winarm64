@@ -2,15 +2,48 @@
 
 This directory is the **build-toolchain side of Jalur B** (the Mesa PanVK port).
 It does not contain Mesa; `tools\fetch-mesa.ps1` pins it into the git-ignored
-`external\mesa`. It **does now build it**: as of 2026-11-09 this tree links a
-complete ARM64 Windows `vulkan_panfrost.dll`, plus the Gallium panfrost OpenGL
-pair `libgallium_wgl.dll` / `opengl32.dll`, with no MSVC ARM64 CRT installed and
-no VC++ redistributable dependency. See **Status** below.
+`external\mesa-v9`. It **does build it, and it now builds v9**: the pin is
+`feeadb5f` + the FourFectVK Valhall-v9 stack, and the shader libraries are
+pregenerated so no LLVM is needed (see "Current state" below). The Windows ARM64
+`vulkan_panfrost.dll` also links with no MSVC ARM64 CRT and no VC++
+redistributable dependency; see **Status**.
 
 Nothing here touches the tablet, the KMD, or USB. Everything it writes stays
 inside the repository (`.venv\`, `build\`), and both are git-ignored.
 
-## Status (measured on this host, 2026-11-08)
+## Current state (2026-11-10)
+
+The tree is pinned at **`feeadb5f` (Mesa 26.3.0-devel)**, not `mesa-25.0.7`:
+Valhall **v9** (Mali-G57) only exists in the FourFectVK stack, and that stack is
+measured against this commit. Three consequences:
+
+| Change | Where |
+| --- | --- |
+| The v9 stack is applied as a base layer, before our patches | `patches-v9/fourfectvk/` (5 patches) |
+| Project patches renumbered, rebased, pruned to a contiguous set | `patches/0001`–`0008` |
+| Panfrost shader libraries pregenerated, so CLC/LLVM is not needed | `pregen/` + `-Dpanfrost-pregen=true` |
+
+`tools\gen-libpan-wsl.sh` (Linux/WSL) regenerates `pregen/`; regenerating from
+the same tree reproduces the committed files byte for byte. A native build of
+the final tree with `-Dllvm=disabled -Dmesa-clc=auto -Dpanfrost-pregen=true`
+produces a 24 MB `libvulkan_panfrost.so` containing the v9 backend, with
+`mesa_clc` appearing **zero** times in the build graph — that is the end-to-end
+proof that the toolchain gate is gone. See [`../V9-PANVK-PLAN.md`](../V9-PANVK-PLAN.md)
+§3.4.
+
+**The remaining gate is the kernel contract, not the build.** The stack's v9
+submission path calls `KBASE_IOCTL_*` directly (`JOB_SUBMIT` with an atoms
+array, `MEM_*`, `SET_FLAGS`, `KCPU_QUEUE_*`, `VERSION_CHECK_JM` >= 11), so the
+Windows shim has to speak the **kbase UAPI**; the panfrost-kmod shim alone does
+not compile against it. Routes and evidence: `../V9-PANVK-PLAN.md` §3.5.
+
+## Status (measured on this host, 2026-11-08, on the old `mesa-25.0.7` pin)
+
+> **Historical.** These numbers were measured against the `mesa-25.0.7` pin.
+> The pin is now `feeadb5f` + the v9 stack (see "Current state" above), which is
+> why the DLL must be rebuilt and why "v9 is not in this DLL" below no longer
+> describes the tree. The rows are kept because they prove the Windows ARM64
+> toolchain and the CRT-free link recipe work; nothing in them is a v9 result.
 
 | Step | Result |
 | --- | --- |
@@ -42,16 +75,20 @@ configure:
 
 | Gap | Fix |
 | --- | --- |
-| `dep_libdrm` never found ⇒ `vk_drm_syncobj.c` not built, but PanVK calls `vk_drm_syncobj_*` | patch `0009` builds it unconditionally; its `drmSyncobj*` calls resolve against the shim |
+| `dep_libdrm` never found ⇒ `vk_drm_syncobj.c` not built, but PanVK calls `vk_drm_syncobj_*` | patch `0006` builds it unconditionally; its `drmSyncobj*` calls resolve against the shim |
 | `__chkstk`, `_tls_index` (from `vcruntime.lib`, not installed for ARM64) | `runtime/mali_aarch64.s` + `runtime/mali_win32os.cpp` |
-| `sysinfo`, `sched_yield`, `mprotect`, `dup`/`strdup`/`stricmp`, Windows cache-UUID, build-id | compat headers under `cross\compat\`, `runtime/mali_win32os.cpp`, `runtime/mali_posix.cpp`, patches `0007`/`0008` |
+| `sysinfo`, `sched_yield`, `mprotect`, `dup`/`strdup`/`stricmp`, build-id | compat headers under `cross\compat\`, `runtime/mali_win32os.cpp`, `runtime/mali_posix.cpp`, patch `0005` |
 
-**Caveat — v9 is not in this DLL.** The build covers Valhall **v6/v7** and
-**v10** (CSF). Upstream PanVK does not support Valhall **v9** (Mali-G57, this
-tablet's GPU); the JM backend is Bifrost-only. The two patches that would force
-a `libpanvk_v9` are parked in `patches\experimental\` and each fails deep in
-the Bifrost `RENDERER_STATE` draw path. So this DLL proves the *port* works; it
-does not yet drive this GPU. See `patches\experimental\README.md`.
+**Caveat — that DLL has no v9 (superseded).** The 2026-11-09 artifact covers
+Valhall **v6/v7** and **v10** (CSF) only, because upstream PanVK has no v9 and
+the old pin predates the stack. That is no longer the tree: `feeadb5f` + the
+FourFectVK layer adds the v9 JM backend, so a rebuild of this DLL *does* contain
+v9. What it still cannot do is submit, because the kernel contract (kbase UAPI)
+is not implemented in the shim yet — see "Current state" above and
+[`../V9-PANVK-PLAN.md`](../V9-PANVK-PLAN.md) §3.5. The two archeological v9
+patches in `patches\experimental\` are still parked there unapplied; they were
+written against the 25.0.7 Bifrost-based `jm\` path and are superseded by the
+stack's own v9 files.
 
 ### What the missing CRT actually blocks (measured 2026-11-09)
 
@@ -187,18 +224,22 @@ The resulting DLL imports **only UCRT API sets** — no `msvcp140.dll`, no
 
 ## First Mesa configure (2026-11-09): where it stops now
 
-> **Resolved.** This wall was the CLC/LLVM dependency of Mesa's `libpan`
-> CL kernels. It disappeared by pinning the checkout to **`mesa-25.0.7`**
-> (`tools\fetch-mesa.ps1`), the newest release whose PanVK predates that work.
-> The section is kept because it documents *why* the tree is pinned. Configure
-> now completes (patch list below), and `vulkan_panfrost.dll` links.
+> **Resolved twice, and the second way is the one that survives.**
+>
+> Pinning `mesa-25.0.7` dodged `libpan` but also dodged v9, so it could not be
+> the answer. The tree is now on **26.3.0-devel** with the v9 stack, and the
+> CLC wall is gone because the generated sources are checked in
+> (`pregen/`) and Mesa is asked for them with `-Dpanfrost-pregen=true`
+> (`patches/0008-panfrost-pregen.patch`). `-Dllvm=disabled` is then genuinely
+> satisfiable and `mesa_clc` never enters the build graph. The section below is
+> kept because it explains the constraint that shaped the pin.
 
 `tools\setup.ps1` writes a cross file whose link recipe is the shim above
 (`-fuse-ld=lld`, `/nodefaultlib`, the SDK libs, the shim). With that, Meson's
 compiler sanity checks **pass** and the configure runs far:
 
 ```powershell
-meson setup build\mesa ..\..\external\mesa --cross-file build\cross.ini `
+meson setup build\mesa ..\..\external\mesa-v9 --cross-file build\cross.ini `
   -Dvulkan-drivers=panfrost -Dpanfrost-rust=false -Dgallium-drivers= `
   -Dplatforms= -Dglx=disabled -Dgbm=disabled -Dtools= -Dbuild-tests=false `
   -Dopengl=false -Dllvm=disabled -Dcpp_rtti=false
@@ -251,15 +292,20 @@ mesa/
   runtime/mali_tls.cpp            C++ thread-safe statics + thread_local TLS guard
   runtime/mali_vcrt.cpp           mem*/str*, _Mtx_*, _Xlength_error, _Throw_Cpp_error
   runtime/mali_aarch64.s          __chkstk, _setjmpex / longjmp
-  patches/*.patch                 portability patches (currently 0001-0011, 0004/0006
-                                  skipped), applied by tools/patch-mesa.ps1
+  patches/*.patch                 portability patches, contiguous 0001-0008,
+                                  applied by tools/patch-mesa.ps1
+  patches-v9/fourfectvk/*.patch   the vendored FourFectVK v9 stack (5 patches),
+                                  applied *before* patches/ by the same script
   patches/experimental/           v9-enable patches, deliberately NOT applied (see its README)
+  pregen/                         pregenerated libpan/libpoly C sources + SHA256SUMS
+                                  (see pregen/README.md); consumed by -Dpanfrost-pregen
   smoke/meson.build, smoke/hello.c    trivial target: compile + archive an ARM64 lib
   smoke/link_probe.c, link_probe.cpp  the sources link-probe.ps1 measures with
   tools/setup.ps1                 venv + Meson + materialise build\cross.ini + readiness check
-  tools/fetch-mesa.ps1            shallow-clone upstream Mesa at the pinned tag into external\mesa
+  tools/fetch-mesa.ps1            shallow-clone upstream Mesa at the pinned commit into external\mesa-v9
   tools/fetch-flexbison.ps1       vendor win_flex/win_bison into external\winflexbison (GL build)
-  tools/patch-mesa.ps1            reset the checkout and apply patches\*.patch (idempotent)
+  tools/patch-mesa.ps1            reset the checkout, apply patches-v9 + patches, stage pregen\ (idempotent)
+  tools/gen-libpan-wsl.sh         Linux/WSL: regenerate pregen\ with Mesa's own host tools
   tools/build-mesa.ps1            patch, configure, compile → Vulkan (`-Kind vulkan`) or
                                   OpenGL (`-Kind gl`) DLLs
   tools/build-runtime.ps1         build runtime\ + prove a C exe and an STL DLL link
@@ -267,7 +313,7 @@ mesa/
   tools/build-smoke.ps1           configure + build the smoke target
 ```
 
-Generated, git-ignored: `.venv\`, `build\`. Fetched source goes to `external\mesa\`.
+Generated, git-ignored: `.venv\`, `build\`. Fetched source goes to `external\mesa-v9\`.
 
 ## How to run
 
@@ -275,8 +321,8 @@ Generated, git-ignored: `.venv\`, `build\`. Fetched source goes to `external\mes
 cd windrv\mesa
 .\tools\setup.ps1          # venv + Meson + cross.ini  (prints the readiness check)
 .\tools\build-runtime.ps1  # build the C++ runtime shim + prove exe/dll link
-.\tools\fetch-mesa.ps1     # pin upstream Mesa at the tag into external\mesa
-.\tools\patch-mesa.ps1     # reset the checkout and apply patches\*.patch
+.\tools\fetch-mesa.ps1     # pin upstream Mesa at the pinned commit into external\mesa-v9
+.\tools\patch-mesa.ps1     # reset the checkout, apply the v9 stack + patches, stage pregen\
 .\tools\build-mesa.ps1 -Kind vulkan   # patch + configure + compile → vulkan_panfrost.dll
 .\tools\fetch-flexbison.ps1           # GL only: vendor win_flex/win_bison (git-ignored)
 .\tools\build-mesa.ps1 -Kind gl       # → libgallium_wgl.dll + opengl32.dll
@@ -326,32 +372,30 @@ accepts the same overrides (`-KitsRoot`, `-WdkRoot`, `-Clang`, `-Linker`).
 
 ## Next steps for Jalur B
 
-The build works. What is left is the GPU itself:
+The build works *and* v9 is in it. What is left is the kernel contract:
 
-1. **v9 is the wall now.** Upstream PanVK supports Valhall v6/v7 (JM, Bifrost
-   descriptors) and v10 (CSF), but not v9 (Mali-G57). `docs/drivers/panfrost.rst`
-   leaves the Vulkan column blank for G57, and `jm\panvk_vX_cmd_draw.c` hard-uses
-   Bifrost's `RENDERER_STATE`, which v9 genxml does not have. Options, in
-   `../GRAPHICS-STACK.md`:
-   - ~~**OpenGL via Gallium Panfrost**~~ — **ruled out on Windows (2026-11-09).**
-     The Gallium `panfrost` driver *does* support v9, and `-Kind gl` *does* build
-     `libgallium_wgl.dll` + `opengl32.dll`, but Mesa's Windows frontend has no
-     path to it: `src/gallium/targets/wgl/wgl.c:123-137` selects only
-     `d3d12`/`zink`/`llvmpipe`/`softpipe`, and DRI/EGL-drm is disabled under
-     `with_platform_windows` (`meson.build:575`). The panfrost code is linked
-     but unreachable. Separately, the tablet's GDI reports **0 pixel formats**
-     (measured with `tools/gl-smoke/mali_gl_smoke.exe`), so `wglCreateContext()`
-     is unreachable for *any* Mesa driver. See `../DEPLOY.md` §3.
-   - **OpenGL via Zink** — the only remaining GL route on Windows, and it needs
-     the very v9 Vulkan driver that is missing.
-   - **Software Vulkan (lavapipe)** to carry VKD3D/DX12 without the GPU.
-   - **Write a Valhall-JM v9 Vulkan backend** — a new backend, not a port. This
-     is now the single gate for Vulkan, Zink/OpenGL, DXVK and vkd3d alike.
-2. Once a driver renders, **validate on the tablet**: install the ICD JSON, run
-   `windrv\umd\vulkan\test\mali_vk_smoke` / `vulkaninfo`, then `vkd3d`/`DXVK`.
-3. The `WDDM-PATH.md` work (render-only WDDM miniport, or a compute-accelerator
-   class driver) is what makes the GPU appear to Task Manager/DXGI; independent
-   of which userspace API the driver exposes.
+1. ~~**v9 is the wall.**~~ **Solved by the stack, not by us.** The FourFectVK
+   layer (vendored in `patches-v9/fourfectvk/`, applied by `patch-mesa.ps1`)
+   adds the Valhall-v9 JM backend, including the v9 genxml, the Bifrost/Valhall
+   split of `cmd_draw`, transform feedback and geometry prefixes. Gallium
+   panfrost GL remains **unreachable on Windows** (Mesa's WGL frontend selects
+   only `d3d12`/`zink`/`llvmpipe`/`softpipe`, and the tablet's GDI exposes
+   **0 pixel formats**), so GL stays Zink over this ICD. See `../DEPLOY.md` §3.
+2. **The new wall: the kernel contract.** The stack submits with
+   `ioctl(fd, KBASE_IOCTL_JOB_SUBMIT, ...)` and a kbase atoms array; it does not
+   go through `pan_kmod`'s panfrost backend. So `mali_drm.cpp` must gain an
+   `ioctl()` + kbase dispatch, translating onto our existing `IOCTL_MALI_*`
+   v2 ABI. The exact request set is in `../V9-PANVK-PLAN.md` §3.5.
+3. **Then build the Windows ARM64 DLL** with `build-mesa.ps1 -Kind vulkan`
+   (already `-Dpanfrost-pregen=true -Dpanfrost-kmds=kbase,panthor`), and
+   validate on the tablet: `vkCreateDevice` → `vkCmdFillBuffer` → first
+   triangle. After that, `vkd3d`/`DXVK` become reachable, since they are just
+   Vulkan clients.
+4. The `WDDM-PATH.md` work (render-only WDDM miniport) is what makes the GPU
+   appear to Task Manager/DXGI; independent of which userspace API the driver
+   exposes, and it wants the same KMD work (multi-AS, non-contiguous BOs,
+   VM_BIND, fences) that kbase's VM model does.
 
 The shader-compiler work (SPIR-V → Valhall) is real; the Win32/DRM shim that
-used to come first is now written and exercised by the build.
+used to come first is now written and exercised by the build — it just needs
+the kbase dialect on top.

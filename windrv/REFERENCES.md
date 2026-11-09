@@ -46,14 +46,18 @@ kode proyek tetap ditulis sendiri di dalam `windrv\`.
 - **Mesa Panfrost / PanVK** — <https://gitlab.freedesktop.org/mesa/mesa>
   Driver open-source Mali (kernel Panfrost + Vulkan PanVK). Kandidat utama yang
   akan di-port sebagai **Vulkan ICD** kita.
-  - Yang dipakai proyek ini: tag **`mesa-25.0.7`** (PanVK-nya belum butuh
-    CLC/LLVM). Patch portabilitas ada di `mesa/patches/`.
-  - **Batas penting — v9 tidak didukung:** `docs/drivers/panfrost.rst` (25.0.7)
-    mengosongkan kolom **Vulkan** untuk `G57`/`Valhall (v9)`;
-    `src/panfrost/vulkan/meson.build` hanya punya `jm_archs = [6, 7]`. Commit
-    Mesa yang menyatakannya: *"panvk: Don't pretend we can compile for v9"*.
-  - Panfrost **Gallium (OpenGL)** *memang* mendukung v9 — jalur render GPU yang
-    realistis untuk G57 saat ini.
+  - Yang dipakai proyek ini: **`feeadb5f` (26.3.0-devel)** + patch stack
+    FourFectVK (`mesa/patches-v9/fourfectvk/`), karena v9 hanya ada di stack itu.
+    Patch portabilitas Windows: `mesa/patches/0001..0008`.
+  - **v9 tidak didukung oleh Mesa upstream** (`docs/drivers/panfrost.rst`
+    mengosongkan kolom Vulkan untuk `G57`, `jm_archs = [6, 7]`, commit
+    *"panvk: Don't pretend we can compile for v9"*); dukungannya datang dari
+    stack FourFectVK, bukan dari Mesa itu sendiri.
+  - CLC/LLVM tidak diperlukan karena `src/panfrost/libpan` + `src/poly/cl`
+    di-pregenerate (`mesa/pregen/`, `-Dpanfrost-pregen=true`).
+  - Panfrost **Gallium (OpenGL)** mendukung v9, tetapi **tidak terjangkau di
+    Windows** (frontend WGL hanya `d3d12`/`zink`/`llvmpipe`/`softpipe`), jadi
+    jalur GL tetap Zink di atas ICD Vulkan.
 
 - **Mesa — daftar referensi driver** —
   <https://docs.mesa3d.org/drivers/panfrost.html> (versi terbit dari

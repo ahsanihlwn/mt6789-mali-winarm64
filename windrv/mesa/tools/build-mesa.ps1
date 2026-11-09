@@ -15,9 +15,11 @@
     invocation (including --version) carry `--target=aarch64-pc-windows-msvc`,
     so Meson picks `/MACHINE:arm64`.
 
-  It uses the Mesa version pinned by tools\fetch-mesa.ps1 (mesa-25.0.7). Newer
-  Mesa (25.1+) needs `mesa_clc`, which links LLVM and cannot be built here; see
-  README.md.
+  It uses the Mesa commit pinned by tools\fetch-mesa.ps1 (feeadb5f, i.e.
+  26.3.0-devel, the base of the FourFectVK Valhall-v9 stack) and needs two
+  things the plain tree does not have: the patch stack applied by
+  tools\patch-mesa.ps1, and the pregenerated libpan/libpoly sources from
+  windrv\mesa\pregen used via -Dpanfrost-pregen=true. See README.md.
 
   Nothing is executed; the output is an ARM64 DLL. It is not deployed.
 #>
@@ -41,7 +43,7 @@ $ErrorActionPreference = 'Continue'
 
 $mesaRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)  # windrv\mesa
 $windrv   = Split-Path -Parent $mesaRoot
-$srcDir   = Join-Path (Split-Path -Parent $windrv) 'external\mesa'
+$srcDir   = Join-Path (Split-Path -Parent $windrv) 'external\mesa-v9'
 $buildDir = Join-Path $mesaRoot ("build\mesa" + $(if ($Kind -eq 'gl') { '-gl' } else { '' }))
 $cross    = Join-Path $mesaRoot 'build\cross.ini'
 
@@ -121,15 +123,21 @@ try {
         Remove-Item -Recurse -Force $buildDir
     }
 
-    # Minimal, no-LLVM panfrost configurations (see README.md).
+    # Minimal panfrost configurations (see README.md).
     #
-    #   vulkan : PanVK ICD only (current Jalur B target)
+    #   vulkan : PanVK ICD only (current Jalur B target). Mali-G57 is Valhall v9,
+    #            which only exists in the FourFectVK stack, and that stack
+    #            submits through the kbase UAPI (KBASE_IOCTL_JOB_SUBMIT with an
+    #            atoms array) - hence panfrost-kmds=kbase. panthor is only there
+    #            so the CSF architecture libraries (v10+) link; no CSF device is
+    #            ever opened on this SoC.
     #   gl     : Gallium panfrost OpenGL (opengl32.dll / libgallium_wgl.dll).
-    #            This is the v9 render path: mainline Gallium panfrost supports
-    #            Valhall v9, while upstream PanVK does not.
+    #            Kept as a smoke target only: on Windows the GL path is Zink
+    #            over the PanVK ICD above.
     #
     # Both use Mesa's Windows platform (WSI only): no display driver, no WDDM,
-    # display stays on GOP.
+    # display stays on GOP. Both use -Dpanfrost-pregen=true so mesa_clc/LLVM is
+    # not needed; -Dllvm=disabled is then actually satisfiable.
     if ($Kind -eq 'gl') {
         $opts = @(
             '--cross-file', 'build\cross.ini',
@@ -144,7 +152,8 @@ try {
             '-Dbuild-tests=false',
             '-Dllvm=disabled',
             '-Dcpp_rtti=false',
-            '-Dxmlconfig=disabled'
+            '-Dxmlconfig=disabled',
+            '-Dpanfrost-pregen=true'
         )
     } else {
         $opts = @(
@@ -159,7 +168,9 @@ try {
             '-Dopengl=false',
             '-Dllvm=disabled',
             '-Dcpp_rtti=false',
-            '-Dxmlconfig=disabled'
+            '-Dxmlconfig=disabled',
+            '-Dpanfrost-pregen=true',
+            '-Dpanfrost-kmds=kbase,panthor'
         )
     }
 
