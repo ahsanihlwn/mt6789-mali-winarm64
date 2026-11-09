@@ -136,9 +136,10 @@ existing v2 IOCTLs, and Jalur A (our own ICD) keeps working either way.
 
 ## 5. Suggested next steps (in order)
 
-1. Clone Mesa at `feeadb5f` into a scratch tree (**outside** this repo; the repo
-   only keeps patches) and confirm `src/panfrost/vulkan/valhall/` is populated
-   and that v9 JM is present.
+1. Clone Mesa at `feeadb5f` into a scratch tree under the repo's git-ignored
+   `external/` (e.g. `external/mesa-v9`, same place `external/mesa` lives — never
+   outside the project folder) and confirm `src/panfrost/vulkan/valhall/` is
+   populated and that v9 JM is present.
 2. Dry-run `patches-upstream/0001…0005` to confirm they apply cleanly to
    `feeadb5f` (they should — that is the published base).
 3. Port `windrv/mesa/patches/*` onto that tree; write down each conflict.
