@@ -150,13 +150,23 @@ static NTSTATUS MaliHandleBoInfo(_In_ PMALI_KMD_DEVICE Ctx, _In_ WDFREQUEST Requ
 static NTSTATUS MaliHandleMmuEnable(_In_ PMALI_KMD_DEVICE Ctx, _In_ WDFREQUEST Request)
 {
     NTSTATUS Status;
+    ULONG TranscfgLo = 0, TranscfgHi = 0;
+    ULONG OutData[2] = {0, 0};
 
     /* The GPU must be powered before the MMU can be programmed. */
     Status = MaliHwPowerOn(Ctx);
     if (NT_SUCCESS(Status)) {
         Status = MaliMmuEnable(Ctx);
+        /* Read back TRANSCFG to verify mode. */
+        MaliHwReadReg(Ctx, MTK_REGION_GPU, 0x2430, &TranscfgLo);
+        MaliHwReadReg(Ctx, MTK_REGION_GPU, 0x2434, &TranscfgHi);
     }
-    MaliComplete(Request, Status, 0);
+    OutData[0] = Ctx->Mmu.UsePageTables;
+    OutData[1] = TranscfgLo;
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+               "MaliKmd: MMU_ENABLE IOCTL - Status=0x%08X UsePageTables=%d TranscfgLo=0x%08X\n",
+               Status, Ctx->Mmu.UsePageTables, TranscfgLo);
+    MaliComplete(Request, Status, NT_SUCCESS(Status) ? sizeof(OutData) : 0);
     return STATUS_SUCCESS;
 }
 

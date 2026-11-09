@@ -29,16 +29,31 @@
  * MEMATTR and TRANSCFG read back correctly, while IDENTITY completes the
  * same job in 0 ms. Flip this to 1 once the table path is fixed; per-page
  * cache attributes will be needed for peak throughput.
+ *
+ * 2026-11-09: the table path is implemented (L0 allocation + PtPages tracking
+ * below, L3 fill in MaliMmu.c) but still unvalidated. With the flag at 1 the
+ * MMU_ENABLE IOCTL read back UsePageTables=0 and TRANSCFG latched IDENTITY
+ * (0x62000002), so it is kept but disabled. main stays on the validated
+ * IDENTITY mode until the table path passes on silicon.
  */
 #define MALI_MMU_USE_PAGE_TABLES 0
 
+#define MALI_PT_TRACK_MAX     1024   /* enough for bring-up; page tables are few */
+
+typedef struct _MALI_PT_PAGE {
+    UINT64 Phys;
+    PVOID  Va;          /* non-cached VA from MmAllocateContiguousMemorySpecifyCache */
+} MALI_PT_PAGE, *PMALI_PT_PAGE;
+
 typedef struct _MALI_MMU {
-    PVOID      L0Table;      /* kernel VA of the top-level table (non-cached) */
-    UINT64     L0Phys;
-    ULONG      AsNumber;
-    BOOLEAN    Enabled;
-    BOOLEAN    UsePageTables;
-    KSPIN_LOCK TblLock;      /* guards page-table creation + L3 entries */
+    PVOID           L0Table;      /* kernel VA of the top-level table (non-cached) */
+    UINT64          L0Phys;
+    ULONG           AsNumber;
+    BOOLEAN         Enabled;
+    BOOLEAN         UsePageTables;
+    KSPIN_LOCK      TblLock;      /* guards page-table creation + L3 entries */
+    ULONG           PtPageCount;
+    MALI_PT_PAGE    PtPages[MALI_PT_TRACK_MAX];
 } MALI_MMU, *PMALI_MMU;
 
 struct _MALI_KMD_DEVICE;

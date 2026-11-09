@@ -568,8 +568,14 @@ static int Run(void)
         if (ip) ParseU(ip, &index);
         if (np) { const char *q = ParseU(np, &nextLo); if (q) ParseU(q, &nextHi); }
 
-        if (DoIoctl(h, IOCTL_MALI_MMU_ENABLE, NULL, 0, NULL, 0)) Out("MMU enabled\r\n");
-        else { Out("MMU_ENABLE failed: "); OutHex(GetLastError()); Out("\r\n"); }
+        ULONG mmuOut[2] = {0, 0};
+        if (DoIoctl(h, IOCTL_MALI_MMU_ENABLE, NULL, 0, mmuOut, sizeof(mmuOut))) {
+            Out("MMU enabled (UsePageTables="); OutDec(mmuOut[0]);
+            Out(", TranscfgLo=0x"); OutHex(mmuOut[1]); Out(")\r\n");
+        } else { Out("MMU_ENABLE failed: "); OutHex(GetLastError()); Out("\r\n"); }
+
+        /* Read back TRANSCFG immediately after enable to verify mode. */
+        Out("TRANSCFG after enable "); OutHex(RdReg(h, MALI_REG_BLOCK_GPU, 0x2430)); Out("\r\n");
 
         bo.Size  = 4096;
         bo.Flags = MALI_BO_CPU_RD | MALI_BO_CPU_WR | MALI_BO_GPU_RD | MALI_BO_GPU_WR;

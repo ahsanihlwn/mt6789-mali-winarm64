@@ -48,14 +48,16 @@
 /*
  * Page-table entry, aarch64 4K mode (mali_kbase_mmu_mode_aarch64.c).
  *
- * Note: both a level-0..2 "next table" pointer and a level-3 4KB page entry
- * use type 3 (ENTRY_IS_PTE == ENTRY_IS_ATE_L3). Type 1 (ENTRY_IS_ATE_L02) is
- * only for 2MB huge-page block descriptors, which this driver never creates.
+ * Entry type encoding (bits 1:0):
+ *   0b00 = invalid
+ *   0b01 = table descriptor (levels 0..2)  -> ENTRY_IS_ATE_L02
+ *   0b10 = reserved
+ *   0b11 = page descriptor (level 3)       -> ENTRY_IS_ATE_L3 / ENTRY_IS_PTE
  */
 #define PTE_TYPE_MASK           3ull
-#define PTE_TABLE               3ull       /* next-level table (levels 0..2) */
+#define PTE_TABLE               1ull       /* next-level table (levels 0..2) = ATE_L02 */
 #define PTE_INVALID             2ull
-#define PTE_L3_VALID            3ull       /* level 3 4KB ATE             */
+#define PTE_L3_VALID            3ull       /* level 3 4KB ATE / PTE = ATE_L3 */
 #define PTE_ATTR_INDEX          5ull       /* AS_MEMATTR_INDEX_NON_CACHEABLE */
 #define PTE_ATTR                (PTE_ATTR_INDEX << 2)
 #define PTE_RW                  (1ull << 6)
@@ -70,6 +72,18 @@
 #define MALI_POLL_ITER          2000
 #define MALI_POLL_US            10
 
+/* Find the non-cached VA for a page table page we allocated. */
+static PVOID MaliFindPtVa(PMALI_KMD_DEVICE Ctx, UINT64 Phys)
+{
+    PMALI_MMU Mmu = &Ctx->Mmu;
+    for (ULONG i = 0; i < Mmu->PtPageCount; i++) {
+        if (Mmu->PtPages[i].Phys == Phys) {
+            return Mmu->PtPages[i].Va;
+        }
+    }
+    return NULL;
+}
+
 static PVOID MaliPhysToVa(UINT64 Pa)
 {
     PHYSICAL_ADDRESS p;
@@ -77,21 +91,42 @@ static PVOID MaliPhysToVa(UINT64 Pa)
     return MmGetVirtualForPhysical(p);
 }
 
-static PVOID MaliAllocTable(_Out_ PUINT64 PhysOut)
+static PVOID MaliAllocTable(PMALI_KMD_DEVICE Ctx, _Out_ PUINT64 PhysOut)
 {
     PHYSICAL_ADDRESS Low, High, Boundary;
     PVOID Va;
 
     Low.QuadPart      = 0;
-    High.QuadPart     = MALI_VA_LIMIT - 1;
+    High.QuadPart     = MALI_VA_LIMIT - 1;  /* GPU supports 40-bit PA, use full range */
     Boundary.QuadPart = 0;
 
-    Va = MmAllocateContiguousMemorySpecifyCache(MALI_PAGE_SIZE, Low, High, Boundary, MmNonCached);
+    /* PTW is configured with WRITE_BACK, so allocate page tables as cached (write-back). */
+    Va = MmAllocateContiguousMemorySpecifyCache(MALI_PAGE_SIZE, Low, High, Boundary, MmCached);
     if (Va == NULL) {
+        /* Fallback: try non-cached */
+        Va = MmAllocateContiguousMemorySpecifyCache(MALI_PAGE_SIZE, Low, High, Boundary, MmNonCached);
+    }
+    if (Va == NULL) {
+        DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
+                   "MaliKmd: PT alloc failed (Low=0x%llx High=0x%llx)\n",
+                   (unsigned long long)Low.QuadPart, (unsigned long long)High.QuadPart);
         return NULL;
     }
     RtlZeroMemory(Va, (SIZE_T)MALI_PAGE_SIZE);
     *PhysOut = MmGetPhysicalAddress(Va).QuadPart;
+
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+               "MaliKmd: PT page PA=0x%llx VA=%p\n",
+               (unsigned long long)*PhysOut, Va);
+
+    /* Track the VA so we can write PTEs through it later. */
+    PMALI_MMU Mmu = &Ctx->Mmu;
+    if (Mmu->PtPageCount < MALI_PT_TRACK_MAX) {
+        Mmu->PtPages[Mmu->PtPageCount].Phys = *PhysOut;
+        Mmu->PtPages[Mmu->PtPageCount].Va   = Va;
+        Mmu->PtPageCount++;
+    }
+
     return Va;
 }
 
@@ -105,7 +140,12 @@ static NTSTATUS MaliGetOrCreateTable(PMALI_KMD_DEVICE Ctx, PUINT64 Table, ULONG 
         KIRQL  OldIrql;
 
         if ((Entry & PTE_TYPE_MASK) == PTE_TABLE) {
-            Va = MaliPhysToVa(Entry & PTE_ADDR_MASK);
+            Phys = Entry & PTE_ADDR_MASK;
+            Va = MaliFindPtVa(Ctx, Phys);
+            if (Va == NULL) {
+                /* Fallback for any untracked tables (shouldn't happen for our PTs). */
+                Va = MaliPhysToVa(Phys);
+            }
             if (Va == NULL) {
                 return STATUS_DEVICE_HARDWARE_ERROR;
             }
@@ -117,7 +157,7 @@ static NTSTATUS MaliGetOrCreateTable(PMALI_KMD_DEVICE Ctx, PUINT64 Table, ULONG 
         }
 
         /* Allocate outside the lock: the memory manager may need PASSIVE. */
-        Va = MaliAllocTable(&Phys);
+        Va = MaliAllocTable(Ctx, &Phys);
         if (Va == NULL) {
             return STATUS_INSUFFICIENT_RESOURCES;
         }
@@ -138,7 +178,8 @@ static NTSTATUS MaliGetOrCreateTable(PMALI_KMD_DEVICE Ctx, PUINT64 Table, ULONG 
     }
 }
 
-static PUINT64 MaliFindL3(PUINT64 L0, UINT64 Va)
+/* Find L3 table for a GPU VA. Uses tracked non-cached VAs for our page tables. */
+static PUINT64 MaliFindL3(PMALI_KMD_DEVICE Ctx, PUINT64 L0, UINT64 Va)
 {
     PUINT64 Table = L0;
     UINT64 Shifts[3] = { 39, 30, 21 };
@@ -149,39 +190,49 @@ static PUINT64 MaliFindL3(PUINT64 L0, UINT64 Va)
         if ((Entry & PTE_TYPE_MASK) != PTE_TABLE) {
             return NULL;
         }
-        Table = (PUINT64)MaliPhysToVa(Entry & PTE_ADDR_MASK);
-        if (Table == NULL) {
+        UINT64 Phys = Entry & PTE_ADDR_MASK;
+        PVOID VaPtr = MaliFindPtVa(Ctx, Phys);
+        if (VaPtr == NULL) {
+            VaPtr = MaliPhysToVa(Phys);
+        }
+        if (VaPtr == NULL) {
             return NULL;
         }
+        Table = (PUINT64)VaPtr;
     }
     return Table;
 }
 
 /*
- * Invalidate the GPU's page-table cache. Only meaningful once the MMU is
- * running; during first bring-up there are no live jobs, so a best-effort
- * command is enough.
+ * Invalidate the GPU's page-table cache. Vendor kbase does FLUSH_PT followed
+ * by UPDATE to ensure new page-table entries are visible to PTW.
  */
 static VOID MaliMmuFlushPt(PMALI_KMD_DEVICE Ctx)
 {
     if (!Ctx->Mmu.Enabled) {
         return;
     }
-    MaliHwWriteReg(Ctx, MTK_REGION_GPU,
-                   MMU_AS_REG(Ctx->Mmu.AsNumber, AS_COMMAND), AS_COMMAND_FLUSH_PT);
-    KeStallExecutionProcessor(MALI_POLL_US * 10);
+    ULONG As = Ctx->Mmu.AsNumber;
+    MaliHwWriteReg(Ctx, MTK_REGION_GPU, MMU_AS_REG(As, AS_COMMAND), AS_COMMAND_FLUSH_PT);
+    KeStallExecutionProcessor(100);
+    MaliHwWriteReg(Ctx, MTK_REGION_GPU, MMU_AS_REG(As, AS_COMMAND), AS_COMMAND_UPDATE);
+    KeStallExecutionProcessor(100);
 }
 
-static VOID MaliFreeTree(PUINT64 Table, ULONG Level)
+static VOID MaliFreeTree(PMALI_KMD_DEVICE Ctx, PUINT64 Table, ULONG Level)
 {
     if (Level < 3) {
         ULONG i;
         for (i = 0; i < MALI_PT_ENTRIES; i++) {
             UINT64 Entry = Table[i];
             if ((Entry & PTE_TYPE_MASK) == PTE_TABLE) {
-                PUINT64 Child = (PUINT64)MaliPhysToVa(Entry & PTE_ADDR_MASK);
-                if (Child != NULL) {
-                    MaliFreeTree(Child, Level + 1);
+                UINT64 Phys = Entry & PTE_ADDR_MASK;
+                PVOID ChildVa = MaliFindPtVa(Ctx, Phys);
+                if (ChildVa == NULL) {
+                    ChildVa = MaliPhysToVa(Phys);
+                }
+                if (ChildVa != NULL) {
+                    MaliFreeTree(Ctx, (PUINT64)ChildVa, Level + 1);
                 }
             }
         }
@@ -196,9 +247,10 @@ NTSTATUS MaliMmuInitialize(PMALI_KMD_DEVICE Ctx)
 
     RtlZeroMemory(&Ctx->Mmu, sizeof(Ctx->Mmu));
     Ctx->Mmu.AsNumber = MALI_MMU_ASN;
+    Ctx->Mmu.PtPageCount = 0;
     KeInitializeSpinLock(&Ctx->Mmu.TblLock);
 
-    Table = MaliAllocTable(&Phys);
+    Table = MaliAllocTable(Ctx, &Phys);
     if (Table == NULL) {
         DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
                    "MaliKmd: MMU L0 table allocation failed\n");
@@ -219,7 +271,7 @@ NTSTATUS MaliMmuInitialize(PMALI_KMD_DEVICE Ctx)
 VOID MaliMmuCleanup(PMALI_KMD_DEVICE Ctx)
 {
     if (Ctx->Mmu.L0Table != NULL) {
-        MaliFreeTree((PUINT64)Ctx->Mmu.L0Table, 0);
+        MaliFreeTree(Ctx, (PUINT64)Ctx->Mmu.L0Table, 0);
         Ctx->Mmu.L0Table = NULL;
         Ctx->Mmu.L0Phys  = 0;
     }
@@ -241,11 +293,15 @@ NTSTATUS MaliMmuEnable(PMALI_KMD_DEVICE Ctx)
 
     Transtab = Ctx->Mmu.L0Phys & AS_TRANSTAB_BASE_MASK;
     Memattr  = MALI_AS_MEMATTR_VALUE;
-    Transcfg = (Ctx->Mmu.UsePageTables ? AS_TRANSCFG_ADRMODE_AARCH64_4K
-                                       : AS_TRANSCFG_ADRMODE_IDENTITY) |
+    /* Use IDENTITY by default; switch to AARCH64_4K after first BO mapped. */
+    Transcfg = AS_TRANSCFG_ADRMODE_IDENTITY |
                AS_TRANSCFG_PTW_MEMATTR_WRITE_BACK |
                AS_TRANSCFG_PTW_SH_OS |
                AS_TRANSCFG_R_ALLOCATE;
+
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+               "MaliKmd: MMU Enable - IDENTITY mode Transcfg=0x%llx\n",
+               (unsigned long long)Transcfg);
 
     MaliHwWriteReg(Ctx, MTK_REGION_GPU, MMU_AS_REG(As, AS_TRANSTAB_LO), (ULONG)(Transtab & 0xFFFFFFFFu));
     MaliHwWriteReg(Ctx, MTK_REGION_GPU, MMU_AS_REG(As, AS_TRANSTAB_HI), (ULONG)(Transtab >> 32));
@@ -297,6 +353,10 @@ NTSTATUS MaliMmuMap(PMALI_KMD_DEVICE Ctx, UINT64 Pa, UINT64 Size)
         return STATUS_INVALID_PARAMETER;
     }
 
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+               "MaliKmd: Map PA=0x%llx Size=0x%llx L0Phys=0x%llx\n",
+               (unsigned long long)Pa, (unsigned long long)Size, (unsigned long long)Ctx->Mmu.L0Phys);
+
     Va  = Pa;            /* identity */
     End = Pa + Size;
 
@@ -334,7 +394,7 @@ NTSTATUS MaliMmuUnmap(PMALI_KMD_DEVICE Ctx, UINT64 Va, UINT64 Size)
 
     End = Va + Size;
     while (Va < End) {
-        PUINT64 L3 = MaliFindL3((PUINT64)Ctx->Mmu.L0Table, Va);
+        PUINT64 L3 = MaliFindL3(Ctx, (PUINT64)Ctx->Mmu.L0Table, Va);
         if (L3 != NULL) {
             L3[(Va >> 12) & 0x1FF] = PTE_INVALID;
         }
