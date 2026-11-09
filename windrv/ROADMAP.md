@@ -116,16 +116,23 @@ usable:
   type/attr/AF/RW bits verified against `mali_kbase_mmu_mode_aarch64.c`, fault
   status readback. Page-table creation is race-safe.
   **Address mode: `ADRMODE_IDENTITY` by default** (`MALI_MMU_USE_PAGE_TABLES` in
-  `include/mali_mmu.h` flips back). Rationale: BOs are identity mapped, so the
-  table buys nothing today, and on silicon the AArch64 table path raises
-  `AS_FAULTSTATUS=0x7C0002C0` (translation fault, read) on the first descriptor
-  fetch even though `TRANSTAB`, `MEMATTR` and `TRANSCFG` read back correctly;
-  `IDENTITY` completes the same job in 0 ms. Two suspects to chase before
-  enabling tables: (a) page-table pages are allocated >4 GB and the walker may
-  not reach them, (b) table VAs come from `MmGetVirtualForPhysical()` (cached
-  direct map) while the pages are `MmNonCached`, which is architecturally
-  unpredictable on ARM64. Per-page cache attributes will be needed for peak
-  throughput, so this must be fixed before performance work.
+  `include/mali_mmu.h` flips to `ADRMODE_AARCH64_4K`). Rationale: BOs are
+  identity mapped, so the table buys nothing today, and on silicon the AArch64
+  table path raised `AS_FAULTSTATUS=0x7C0002C0` (translation fault, read) on the
+  first descriptor fetch even though `TRANSTAB`, `MEMATTR` and `TRANSCFG` read
+  back correctly; `IDENTITY` completes the same job in 0 ms.
+  Two fixes landed afterwards, both confined to the disabled table path:
+  (a) `MaliMmuEnable` used to hard-code `ADRMODE_IDENTITY` and never consulted
+  `UsePageTables` — that is why flipping the macro never changed `TRANSCFG`;
+  it now selects `AARCH64_4K` when the flag is set. (b) Page-table pages are now
+  allocated `MmNonCached` first (cached only as a fallback), so PTE stores reach
+  DRAM before the walker reads them instead of relying on CPU/GPU coherency;
+  `AS_MEMATTR` index 5 is `NON_CACHEABLE` (0x4C) per the vendor regmap. The
+  >4 GB suspect is probably not the cause (BOs use the same 40-bit bound and
+  work). Still unvalidated on silicon: try `MALI_MMU_USE_PAGE_TABLES 1` on the
+  tablet and read `MMU Enable - AARCH64_4K mode Transcfg=0x...` in the log.
+  Per-page cache attributes will be needed for peak throughput, so this must be
+  fixed before performance work.
 - [x] **Core power**: shader/tiler/L2 `PRESENT -> PWRON -> poll READY`, after
   MTCMOS; `SHADER_PRESENT` offset corrected (`0x100`, was wrongly `0x2C0`).
 - [x] **GPU soft reset on power-up**, matching `kbase_pm_do_reset`: after MTCMOS

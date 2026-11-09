@@ -35,6 +35,15 @@
  * MMU_ENABLE IOCTL read back UsePageTables=0 and TRANSCFG latched IDENTITY
  * (0x62000002), so it is kept but disabled. main stays on the validated
  * IDENTITY mode until the table path passes on silicon.
+ *
+ * 2026-11-09 (later): page-table pages are now allocated MmNonCached first
+ * (cached only as a fallback). The GPU's table walker is not guaranteed to
+ * snoop CPU caches, and AS_MEMATTR index 5 — the policy the PTEs carry — is
+ * NON_CACHEABLE (0x4C) per the vendor regmap, not write-back. A cached CPU
+ * mapping could therefore leave freshly written PTEs in the cache, which is
+ * the most plausible cause of the translation fault at the first descriptor
+ * fetch. This change cannot regress IDENTITY mode; it only affects the
+ * disabled table path.
  */
 #define MALI_MMU_USE_PAGE_TABLES 0
 

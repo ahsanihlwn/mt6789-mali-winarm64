@@ -252,8 +252,11 @@ The interesting parts are all in [`windrv/ROADMAP.md`](windrv/ROADMAP.md) and
 3. **Identity address mode.** With AArch64 4 KiB page tables the GPU raised
    `TRANSLATION_FAULT` on the very first descriptor fetch even though
    `TRANSTAB`/`MEMATTR`/`TRANSCFG` all read back correctly. Buffer objects are
-   identity-mapped, so `AS_TRANSCFG_ADRMODE_IDENTITY` is used; page tables are
-   kept behind `MALI_MMU_USE_PAGE_TABLES` for when that path is fixed.
+   identity-mapped, so `AS_TRANSCFG_ADRMODE_IDENTITY` is used. The table path is
+   kept behind `MALI_MMU_USE_PAGE_TABLES`; two bugs on it are now fixed (the
+   enable path hard-coded IDENTITY and ignored the flag, and page tables were
+   allocated cached although the walker uses non-cacheable attributes), but the
+   `AARCH64_4K` mode itself still needs a silicon run.
 4. **No IRQ resource.** The `ROOT\MaliMtk` node has no interrupt descriptors, so
    completion currently falls back to polling `JOB_IRQ_RAWSTAT`. An ACPI node
    with a `GpioInt`/`Interrupt` resource is needed for real IRQs.

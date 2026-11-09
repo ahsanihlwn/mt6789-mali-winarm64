@@ -100,11 +100,20 @@ static PVOID MaliAllocTable(PMALI_KMD_DEVICE Ctx, _Out_ PUINT64 PhysOut)
     High.QuadPart     = MALI_VA_LIMIT - 1;  /* GPU supports 40-bit PA, use full range */
     Boundary.QuadPart = 0;
 
-    /* PTW is configured with WRITE_BACK, so allocate page tables as cached (write-back). */
-    Va = MmAllocateContiguousMemorySpecifyCache(MALI_PAGE_SIZE, Low, High, Boundary, MmCached);
+    /*
+     * Page tables are read by the GPU's page-table walker, which is not
+     * guaranteed to snoop the CPU caches. Allocate them non-cached so every
+     * PTE store is in DRAM before the walk can see it; AS_MEMATTR index 5
+     * (the one the PTEs use, see MALI_AS_MEMATTR_VALUE) is NON_CACHEABLE
+     * (0x4C), so this also matches the memory policy the GPU is told about.
+     * A cached (write-back) mapping is only safe on a fully coherent SoC,
+     * which is exactly the assumption we cannot verify on this part.
+     * Keep the cached allocation as a fallback so bring-up still works if
+     * non-cached contiguous pages are unavailable.
+     */
+    Va = MmAllocateContiguousMemorySpecifyCache(MALI_PAGE_SIZE, Low, High, Boundary, MmNonCached);
     if (Va == NULL) {
-        /* Fallback: try non-cached */
-        Va = MmAllocateContiguousMemorySpecifyCache(MALI_PAGE_SIZE, Low, High, Boundary, MmNonCached);
+        Va = MmAllocateContiguousMemorySpecifyCache(MALI_PAGE_SIZE, Low, High, Boundary, MmCached);
     }
     if (Va == NULL) {
         DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
@@ -293,14 +302,21 @@ NTSTATUS MaliMmuEnable(PMALI_KMD_DEVICE Ctx)
 
     Transtab = Ctx->Mmu.L0Phys & AS_TRANSTAB_BASE_MASK;
     Memattr  = MALI_AS_MEMATTR_VALUE;
-    /* Use IDENTITY by default; switch to AARCH64_4K after first BO mapped. */
-    Transcfg = AS_TRANSCFG_ADRMODE_IDENTITY |
+    /*
+     * The address mode is the whole point of the flag: IDENTITY maps GPU VA to
+     * PA without a walk, AARCH64_4K walks the L0 table that MaliMmuMap fills.
+     * This used to be hard-coded to IDENTITY, which is why flipping
+     * MALI_MMU_USE_PAGE_TABLES never changed TRANSCFG on silicon.
+     */
+    Transcfg = (Ctx->Mmu.UsePageTables ? AS_TRANSCFG_ADRMODE_AARCH64_4K
+                                       : AS_TRANSCFG_ADRMODE_IDENTITY) |
                AS_TRANSCFG_PTW_MEMATTR_WRITE_BACK |
                AS_TRANSCFG_PTW_SH_OS |
                AS_TRANSCFG_R_ALLOCATE;
 
     DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
-               "MaliKmd: MMU Enable - IDENTITY mode Transcfg=0x%llx\n",
+               "MaliKmd: MMU Enable - %s mode Transcfg=0x%llx\n",
+               Ctx->Mmu.UsePageTables ? "AARCH64_4K" : "IDENTITY",
                (unsigned long long)Transcfg);
 
     MaliHwWriteReg(Ctx, MTK_REGION_GPU, MMU_AS_REG(As, AS_TRANSTAB_LO), (ULONG)(Transtab & 0xFFFFFFFFu));
