@@ -167,6 +167,23 @@ index f15b334..5648b31 100644
 +    idep_libpan_per_arch += {ver: idep_libpan_cur_ver}
 +  endforeach
 +endif
+diff --git a/src/panfrost/meson.build b/src/panfrost/meson.build
+index cb928b1..3e4c672 100644
+--- a/src/panfrost/meson.build
++++ b/src/panfrost/meson.build
+@@ -41,7 +41,11 @@ endif
+ 
+ subdir('compiler')
+ 
+-if with_gallium_panfrost or with_panfrost_vk or with_tools.contains('panfrost')
++# panfrost_compile is a *host* tool that turns the libpan CL kernels into ISA;
++# with -Dpanfrost-pregen=true that output is checked in, so the tool (and the
++# build-machine compiler it needs) is not part of the build at all.
++if not get_option('panfrost-pregen') and \
++   (with_gallium_panfrost or with_panfrost_vk or with_tools.contains('panfrost'))
+   subdir('clc')
+ endif
+ 
 diff --git a/src/poly/cl/meson.build b/src/poly/cl/meson.build
 index 286dcf1..56a4db5 100644
 --- a/src/poly/cl/meson.build

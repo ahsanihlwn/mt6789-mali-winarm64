@@ -6,9 +6,10 @@
  * guards, or use Mesa's util/os_mman.h wrappers (VirtualAlloc based) on Windows.
  *
  * This header supplies the standard constants and prototypes so such includes
- * resolve. It is NOT an mmap implementation: Mesa's portable entry points are
- * os_mmap/os_munmap. If a Windows build ever calls mmap directly, implement it
- * here (the libdrm shim will need a real one -- see windrv/PANVK-SHIM.md).
+ * resolve. The prototypes are implemented in windrv/mesa/runtime/mali_drm.cpp:
+ * mmap() resolves a buffer object by GPU VA (the libdrm shim's mapping) and
+ * munmap()/mprotect() are no-ops, because the KMD owns the mapping. Mesa's
+ * portable entry points (os_mmap/os_munmap) are still preferred elsewhere.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -39,9 +40,24 @@
 extern "C" {
 #endif
 
-void *mmap(void *addr, size_t length, int prot, int flags, int fd, long offset);
+void *mmap(void *addr, size_t length, int prot, int flags, int fd, int64_t offset);
 int munmap(void *addr, size_t length);
 int mprotect(void *addr, size_t length, int prot);
+
+/*
+ * mincore()
+ * ---------
+ * POSIX puts mincore() in <sys/mman.h>, so it is declared here; it always
+ * fails with ENOSYS (see runtime/mali_drm.cpp). The only caller in this tree is
+ * panfrost/vulkan/jm/panvk_vX_gpu_queue.c's debug heap dump, which treats a
+ * failure as "residency unknown" and prints mincore=unavailable. There is no
+ * meaningful Windows answer: BO pages are mapped by our KMD, and the Linux
+ * concept of a lazily populated page this query exists for (a GPU growable
+ * heap that may never have been written) does not map onto a working-set
+ * query. Reporting ENOSYS keeps the diagnostic honest instead of inventing a
+ * residency bit.
+ */
+int mincore(void *addr, size_t length, unsigned char *vec);
 
 #ifdef __cplusplus
 }

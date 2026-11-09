@@ -102,6 +102,17 @@ try {
     $compatDir = To-Fwd (Join-Path $mesaRoot 'cross\compat')
     $cArgs  = @($target, '-fuse-ld=lld', "/FI$compatHdr", "-I$compatDir", '/imsvc', $t.SdkUcrt, '/imsvc', $t.SdkShared, '/imsvc', $t.SdkUm)
 
+    # Mesa decides whether `PACKED` means __attribute__((packed)) by probing the
+    # *function* attribute of that name (meson.build, functions_to_detect).
+    # clang-cl/ARM64 rejects `packed` on a function, so the probe fails and
+    # util/macros.h defines PACKED as nothing - which silently changes the
+    # layout of every GPU-shared struct from the Linux one. geometry.h's
+    # `sizeof(struct poly_geometry_params) == 79 * 4` assert catches it
+    # (320 != 316: the struct's alignment stays 8 instead of being lowered to
+    # 4). The attribute itself works on structs/enums in clang-cl (measured),
+    # so assert the probe result rather than patching Mesa.
+    $cArgs += '-DHAVE_FUNC_ATTRIBUTE_PACKED'
+
     # No /clang:--target here: Meson passes c_link_args straight to lld-link, which
     # does not understand /clang:. The machine comes from /MACHINE:arm64, which
     # Meson derives from the target it detects (see tools\build-mesa.ps1, which

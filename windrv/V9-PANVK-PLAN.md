@@ -339,6 +339,67 @@ fences (`KCPU` + `MEM_SYNC`), atom dependencies, and cache maintenance. The
 first four of those are on the WDDM prerequisite list anyway (`ROADMAP.md`
 Phase 5), so the tracks still converge.
 
+### 3.6 Route A1 implemented (2026-11-10)
+
+`windrv/mesa/runtime/mali_drm.cpp` now carries `kbase_ioctl()` beside
+`drm_dispatch()`, and `ioctl()`/`poll()`/`read()` route on the fd. Two findings
+from writing it are worth keeping in the plan.
+
+**1. SAME_VA cannot hold on Windows - and does not need to.**
+`kbase_kmod.c` sets the region's GPU address from the *CPU mapping* whenever
+`BASE_MEM_SAME_VA` is set in the flags the kernel returns:
+
+```c
+kbase_bo->gpu_va = kbase_bo->same_va ? (uintptr_t)cpu_ptr : alloc_gpu_va;
+```
+
+The kernel's SAME_VA trick is to pick a VA whose `mmap()` address coincides
+with the GPU VA. A Windows process cannot arrange that. The fix is not a
+patch but a flag: the shim returns `out.flags` with `BASE_MEM_SAME_VA`
+(and `BASE_MEM_NEED_MMAP`) cleared and `out.gpu_va` set to the KMD's real GPU
+VA, so the stack takes the `alloc_gpu_va` branch and everything downstream
+addresses the BO by its true GPU VA. `mmap()` then has to find the region by
+that VA rather than by a synthetic offset, which it does (the offset argument
+was widened from `long` to `int64_t` so VAs above 2 GiB survive).
+
+**2. Completion can stay synchronous.** The stack's default model is
+`ppoll(fd, POLLIN)` + `read(fd, 32 * sizeof(base_jd_event_v2))`. Since
+`IOCTL_MALI_JOB_SUBMIT` already waits on the JS interrupt, the shim completes
+each accepted atom immediately and queues one 24-byte event per atom in submit
+order - which is the order the stack's progress loop depends on. `poll()`
+reports `POLLIN` only while the queue is non-empty (blocking on an auto-reset
+event otherwise), and `read()` drains it. The env knobs
+`PANVK_KBASE_SYNC_SUBMIT` / `PANVK_KBASE_WAIT_SUBMIT` are therefore redundant
+here, though unset behaviour must still be correct.
+
+What the shim answers, and how:
+
+| ioctl | behaviour |
+|---|---|
+| `VERSION_CHECK_JM` | reports 11.25, sets the handshake flag |
+| `VERSION_CHECK_CSF` | **fails with `EPERM`** - this is how the stack picks JM |
+| `SET_FLAGS` | success (no VM/attribute state on this KMD) |
+| `GET_GPUPROPS` | synthesised from the GPU registers, same source as `DRM_PANFROST_PARAM_*` |
+| `MEM_ALLOC` | `MaliUmdBoAlloc`, SAME_VA cleared, real GPU VA returned |
+| `MEM_QUERY` / `MEM_FREE` | resolved through the shim's BO list by GPU VA |
+| `JOB_SUBMIT` | per atom: soft jobs become events; real jobs go to `MaliUmdJobSubmit` on slot `core_req & 1` |
+| `FENCE_TRIGGER` soft atom | writes a synthetic, already-signalled sync-file fd into the caller's `struct base_fence` |
+| `MEM_SYNC` / `MEM_COMMIT` / `MEM_JIT_INIT` / `MEM_EXEC_INIT` | no-ops (BOs are uncached and fully backed; Mali MMU has no XN bit) |
+| `GET_CPU_GPU_TIMEINFO` | monotonic clock |
+| `KCPU_QUEUE_CREATE` / `_DELETE` / `_ENQUEUE` | benign stubs; only reached with `PANVK_KBASE_KCPU_SYNC` set |
+| `MEM_ALIAS` / `MEM_IMPORT` | `ENOSYS` - aliasing is a CSF ring-buffer trick and there is no dma-buf exporter here |
+
+Still open on this path (all shared with the WDDM prerequisite list):
+non-contiguous / multi-AS VM (`SET_FLAGS`), seqno fences, per-page cache
+attributes, and a real IRQ (`ACPI-GPU-NODE.md`).
+
+**Outcome (2026-11-10):** the stack now builds and links on Windows ARM64 -
+`vulkan_panfrost.dll`, 22,635,520 B, `IMAGE_FILE_MACHINE_ARM64`, exporting the
+three ICD entry points (patch `0010`) and importing no VC runtime. The four
+Windows-only defects that had to be fixed first are written up in
+[`mesa/README.md`](mesa/README.md). It has not been loaded on the tablet, so
+none of the behaviour above is hardware-verified yet.
+
 ## 4. Risks / open questions
 
 - **Windows, not Android.** Every published result is on arm64 **Android**

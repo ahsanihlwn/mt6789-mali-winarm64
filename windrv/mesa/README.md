@@ -20,7 +20,7 @@ measured against this commit. Three consequences:
 | Change | Where |
 | --- | --- |
 | The v9 stack is applied as a base layer, before our patches | `patches-v9/fourfectvk/` (5 patches) |
-| Project patches renumbered, rebased, pruned to a contiguous set | `patches/0001`–`0008` |
+| Project patches renumbered, rebased, pruned to a contiguous set | `patches/0001`–`0010` |
 | Panfrost shader libraries pregenerated, so CLC/LLVM is not needed | `pregen/` + `-Dpanfrost-pregen=true` |
 
 `tools\gen-libpan-wsl.sh` (Linux/WSL) regenerates `pregen/`; regenerating from
@@ -31,11 +31,34 @@ produces a 24 MB `libvulkan_panfrost.so` containing the v9 backend, with
 proof that the toolchain gate is gone. See [`../V9-PANVK-PLAN.md`](../V9-PANVK-PLAN.md)
 §3.4.
 
-**The remaining gate is the kernel contract, not the build.** The stack's v9
-submission path calls `KBASE_IOCTL_*` directly (`JOB_SUBMIT` with an atoms
-array, `MEM_*`, `SET_FLAGS`, `KCPU_QUEUE_*`, `VERSION_CHECK_JM` >= 11), so the
-Windows shim has to speak the **kbase UAPI**; the panfrost-kmod shim alone does
-not compile against it. Routes and evidence: `../V9-PANVK-PLAN.md` §3.5.
+**The remaining gate was the kernel contract.** The stack's v9 submission path
+calls `KBASE_IOCTL_*` directly (`JOB_SUBMIT` with an atoms array, `MEM_*`,
+`SET_FLAGS`, `KCPU_QUEUE_*`, `VERSION_CHECK_JM` >= 11), so the Windows shim had
+to speak the **kbase UAPI**; the panfrost-kmod shim alone does not compile
+against it. That is now implemented as route A1 in `runtime/mali_drm.cpp`
+(`kbase_ioctl()` next to `drm_dispatch()`, plus `ioctl()`/`poll()`/`read()` on
+the device fd) and is compile-clean on Windows ARM64; it has not yet been run
+on the tablet. Routes, evidence and the SAME_VA decision:
+[`../V9-PANVK-PLAN.md`](../V9-PANVK-PLAN.md) §3.5-3.6.
+
+**The Windows build is green (2026-11-10).** `-Kind vulkan` now produces
+`build\mesa\src\panfrost\vulkan\vulkan_panfrost.dll`:
+
+| Property | Value |
+| --- | --- |
+| Machine | `IMAGE_FILE_MACHINE_ARM64` |
+| Size / SHA-256 | 22,635,520 B / `6ECBD7B1D3F26FF0FFB6C5BC02DCFE74078B06CC36031BB1988A9BB2CFA0E911` |
+| Exports | `vk_icdGetInstanceProcAddr`, `vk_icdGetPhysicalDeviceProcAddr`, `vk_icdNegotiateLoaderICDInterfaceVersion` |
+| Imports | `KERNEL32`, `api-ms-win-crt-*`, `GDI32`, `USER32`, `SETUPAPI`, `ntdll` - no `VCRUNTIME140`/`MSVCP140` |
+| Patch stack | 5 FourFectVK base + 10 project patches at `feeadb5f` |
+
+The import list is the second proof (after `malitest.exe`) that the CRT-free
+recipe holds for a Mesa-sized binary: the UCRT is reached through its API-set
+DLLs, and there is no VC runtime to install. Four faults had to be fixed to get
+here - the MSVC bitfield ABI, `PACKED` becoming a no-op, the missing POSIX
+surface, and a panvk target that exported nothing at all - each written up
+below. **The DLL has not been loaded on the tablet yet**, so this is a build
+result, not a hardware result.
 
 ## Status (measured on this host, 2026-11-08, on the old `mesa-25.0.7` pin)
 
@@ -83,12 +106,124 @@ configure:
 Valhall **v6/v7** and **v10** (CSF) only, because upstream PanVK has no v9 and
 the old pin predates the stack. That is no longer the tree: `feeadb5f` + the
 FourFectVK layer adds the v9 JM backend, so a rebuild of this DLL *does* contain
-v9. What it still cannot do is submit, because the kernel contract (kbase UAPI)
-is not implemented in the shim yet — see "Current state" above and
-[`../V9-PANVK-PLAN.md`](../V9-PANVK-PLAN.md) §3.5. The two archeological v9
-patches in `patches\experimental\` are still parked there unapplied; they were
-written against the 25.0.7 Bifrost-based `jm\` path and are superseded by the
-stack's own v9 files.
+v9. The kernel contract (kbase UAPI) is now implemented in the shim as route A1
+— `kbase_ioctl()` beside `drm_dispatch()` in `runtime/mali_drm.cpp`, plus
+`ioctl()`/`poll()`/`read()` on the device fd — so the v9 path has a kernel side
+to submit against; see "Current state" above and
+[`../V9-PANVK-PLAN.md`](../V9-PANVK-PLAN.md) §3.5-3.6. It has not been run on
+the tablet yet. The two archeological v9 patches in `patches\experimental\` are
+still parked there unapplied; they were written against the 25.0.7 Bifrost-based
+`jm\` path and are superseded by the stack's own v9 files.
+
+### MSVC/ARM64 portability fixes the v9 build found (2026-11-10)
+
+The 25.0.7 tree configured cleanly; the v9 tree hits four portability details
+that a GCC/Itanium build never sees. All were measured on this host.
+
+**1. `PACKED` silently became a no-op.** Meson probes `packed` as a *function*
+attribute, clang-cl rejects that spelling, so `util/macros.h` left `PACKED`
+empty and every GPU-shared struct quietly drifted from the Linux layout. It
+surfaced as `geometry.h`'s `sizeof(poly_geometry_params) == 79 * 4` assert
+(320 != 316). `__attribute__((packed, aligned(4)))` *does* work on structs under
+clang-cl (measured: 12 bytes/align 4 for `{ u64; u32; }`), so `tools\setup.ps1`
+now asserts `-DHAVE_FUNC_ATTRIBUTE_PACKED` in the cross file instead of patching
+Mesa.
+
+**2. The MSVC bitfield ABI splits runs of different-sized types.** Measured
+under clang-cl for `aarch64-pc-windows-msvc`: adjacent bitfields share an
+allocation unit when their *size* matches, so `enum : 8` + `unsigned : 8` +
+`unsigned : 3` + `enum : 2` + `int : 12` still pack into 4 bytes
+(`pan_varying_slot` proves it — its `== 4` assert passes). One 1- or 2-byte
+member in the middle breaks the run: `bool skip : 1` followed by
+`unsigned _pad : 14` becomes a 1-byte unit plus a 4-byte unit, `sizeof` 8 where
+the Itanium ABI gives 4. A plain (non-bitfield) `bool` after a bitfield run is
+the same story — `panvk_tess_info`'s two `bool`s landed at bytes 2/3 on Itanium
+but 4/5 on MSVC, `sizeof` 4 versus 8. There is no escape hatch: clang's cc1
+exposes only `-mms-bitfields` (no negative form), the driver's
+`-mno-ms-bitfields` is accepted and has no effect on this target, clang-cl
+rejects `-Xclang -fno-ms-bitfields` ("unknown argument ignored ... did you mean
+`-mno-ms-bitfields`"), and neither `__attribute__((packed))` nor
+`#pragma pack(1)` merges the runs (measured: 5 bytes).
+
+The fix is patch `0009`, which makes the three word-`memcpy`'d structs use one
+uniform `unsigned` bitfield run: `pan_bi_tex_flags` and `pan_va_tex_flags`
+(`pan_nir.h`, bit-positions identical to the Itanium build) and `panvk_tess_info`
+(`panvk_shader.h`, where `points`/`ccw` keep their Itanium byte offsets 2 and 3
+via explicit `_pad` fields). Scope stays tiny because only structs that are
+`memcpy`'d or compared as a word need the exact layout, and every one of them
+carries a `static_assert(sizeof(...) == N)` that fails the build when it drifts
+— which is how all three were found rather than by inspection.
+
+One divergence is *not* fixed, because nothing needs it: `pan_earlyzs_state`
+(`unsigned : 2; unsigned : 2; bool : 1; unsigned : 3;`) is 12 bytes here and 1
+byte on Linux. Every access is field-by-field, so the values are right. It only
+becomes a bug the day that struct is `memcpy`'d, hashed or handed to the GPU
+whole — hence the rule above rather than a blanket rewrite.
+
+**3. Missing POSIX surface.** The v9 tree reaches for a handful of glibc/BSD
+names the UCRT does not have, and the right fix differs per case:
+
+*Declared, not defined - Mesa already provides them for `_WIN32`:*
+`strcasecmp`/`strncasecmp` (called from `pan_env.h` and from `pan_trace.c`,
+which includes only `<string.h>`) and `strndup` (Mesa's own
+`src/util/strndup.c` is gated on `_WIN32` and is compiled into `libmesa_util`
+here - defining it in the shim as well would be a duplicate symbol). Both were
+implicit-declaration errors only because glibc's `<string.h>` declares them and
+Mesa's does not; `cross/msvc-compat.h` supplies the declarations.
+
+*Implemented in `runtime/mali_drm.cpp`:* `ppoll()` (forwards to `poll`),
+`fcntl()`/`F_DUPFD_CLOEXEC` (`_dup`; the minimum-descriptor hint and
+close-on-exec are meaningless here), `pread()` (seek, read, restore position;
+synthetic fds get `ENOSYS`), `mincore()` (always `ENOSYS`) and `dladdr()`
+(`GetModuleHandleExA` + `GetModuleFileNameA`, with `\` rewritten to `/` because
+its only caller locates itself through `strrchr(path, '/')`). They are reachable
+only from the CSF/dma-buf paths, one Linux-only debug heap dump and one
+device-name lookup, so they exist to make the tree type-check and degrade
+sensibly rather than to do work. `ppoll`'s timestamp and `pread`'s offset are
+`int64_t` for the same reason our `mmap()` offset is: the UCRT's `off_t` is
+32-bit and GPU VAs are not.
+
+*Renamed, not implemented:* `strtok_r` is a macro over `strtok_s`, which takes
+the same arguments and has the same `*saveptr` continuation contract. `alloca`
+maps to `__builtin_alloca` and `PATH_MAX` to the Linux value (4096), because
+UCRT's `_alloca` is a front-end intrinsic and `_MAX_PATH` (260) is too small for
+Mesa's temp-path buffers.
+
+*Constants and headers only:* `<linux/dma-heap.h>`, the `<strings.h>` spelling
+and a declaration-only `<dlfcn.h>` (nothing built here calls `dlopen`/`dlsym`)
+live in `cross/compat/`. `clockid_t` with `CLOCK_MONOTONIC_RAW`/`CLOCK_BOOTTIME`
+and `_SC_CLK_TCK` are in `cross/msvc-compat.h`: every clock id resolves to the
+same `QueryPerformanceCounter` reading, and `sysconf(_SC_CLK_TCK)` answers
+`CLOCKS_PER_SEC` (1000) for a caller that reads `/proc/self/stat` and therefore
+always sees 0 ticks. `F_OK`/`R_OK`/`W_OK`/`X_OK` live in
+`cross/compat/unistd.h`, where `panvk_instance.c`'s optional `/dev/mali<N>`
+probe finds them. `sys/mman.h`'s prototypes are backed by the shim's real
+`mmap()` (GPU-VA lookup) with no-op `munmap`/`mprotect`.
+
+**4. The DLL exported nothing at all.** The first successful link produced a
+22.6 MB ARM64 `vulkan_panfrost.dll` whose only export was
+`std::_Raise_handler` (from our C++ runtime shim) - the Vulkan loader would
+have called `LoadLibrary`, found no `vk_icdGetInstanceProcAddr`, and declared
+the ICD unloadable. Nothing in the compile phase hints at this; it is only
+visible in the export table. On ELF the ICD entry points stay exported through
+the version script (`vulkan.sym`, gated on `with_ld_version_script`) or default
+visibility, and `symbols_check` exists to verify it - but that test is disabled
+in this tree ("TODO: Re-enable the symbol check with Kraid"). On Windows
+exports come from `vs_module_defs` instead: a `.def` generated from
+`src/vulkan/vulkan_api.def.in` by `gen_vs_module_defs_normal_command`, which
+every other ICD here passes (lavapipe, radv, dzn, nvk) and the v9
+`src/panfrost/vulkan/meson.build` did not. Patch `0010` adds the one missing
+line; all three names it lists already exist (`vk_icdGetInstanceProcAddr` in
+`panvk_instance.c`, `vk_icdNegotiateLoaderICDInterfaceVersion` and
+`vk_icdGetPhysicalDeviceProcAddr` in `src/vulkan/runtime/vk_instance.c`).
+
+The general lesson matches items 1 and 2: on this target the link succeeding
+says nothing about the ABI being right, so the artifact itself has to be
+inspected (`llvm-readobj --coff-exports`) rather than trusted.
+
+`tools\build-mesa.ps1 -Reconfigure` also regenerates `build\cross.ini` now.
+Before, it only ran `setup.ps1` when the file was missing, so a `-D` change to
+the cross file could silently never reach the compiler.
 
 ### What the missing CRT actually blocks (measured 2026-11-09)
 
@@ -281,18 +416,18 @@ mesa/
   cross/aarch64-windows-msvc.ini.in   Meson cross-file template (tokens, no machine paths)
   cross/msvc-compat.h             force-included compat (atomics, asprintf, clock_gettime, …)
   cross/arm64-msvc-atomic.h       clang <arm64intr.h> stand-in for the MSVC-target atomics probe
-  cross/compat/                   headers Windows lacks: sys/{mman,ioctl,ioccom,sysinfo,sysmacros}.h,
-                                  sched.h, unistd.h, poll.h, xf86drm.h (libdrm API subset)
+  cross/compat/                   headers Windows lacks: sys/{mman,ioctl,ioccom,sysinfo,sysmacros}.h, linux/{ioctl,types,dma-heap}.h,
+                                  strings.h, dlfcn.h, sched.h, unistd.h, poll.h, xf86drm.h (libdrm API subset)
   runtime/mali_cxxrt.cpp          C++ runtime shim: operator new/delete, atexit, _Raise_handler
   runtime/mali_crt_exe.cpp        mainCRTStartup
   runtime/mali_crt_dll.cpp        _DllMainCRTStartup
-  runtime/mali_posix.cpp          POSIX/oldnames aliases (read/write/dup/strdup/stricmp/…)
-  runtime/mali_drm.cpp            libdrm + libsyncobj + POSIX shim over the Mali KMD
+  runtime/mali_posix.cpp          POSIX/oldnames aliases (write/dup/strdup/stricmp/strcasecmp/…)
+  runtime/mali_drm.cpp            libdrm + libsyncobj + kbase UAPI shim over the Mali KMD
   runtime/mali_win32os.cpp        sysinfo / sched_yield / _tls_index
   runtime/mali_tls.cpp            C++ thread-safe statics + thread_local TLS guard
   runtime/mali_vcrt.cpp           mem*/str*, _Mtx_*, _Xlength_error, _Throw_Cpp_error
   runtime/mali_aarch64.s          __chkstk, _setjmpex / longjmp
-  patches/*.patch                 portability patches, contiguous 0001-0008,
+  patches/*.patch                 portability patches, contiguous 0001-0010,
                                   applied by tools/patch-mesa.ps1
   patches-v9/fourfectvk/*.patch   the vendored FourFectVK v9 stack (5 patches),
                                   applied *before* patches/ by the same script

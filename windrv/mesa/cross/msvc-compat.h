@@ -87,7 +87,11 @@ static inline int asprintf(char **strp, const char *fmt, ...)
  * always compiles even though this hardware uses the panfrost/JM backend)
  * reads CLOCK_MONOTONIC and calls clock_gettime(). Windows has no Posix clock
  * API; the implementation lives in windrv/mesa/runtime/mali_drm.cpp on top of
- * QueryPerformanceCounter. Only libsync's polling helper uses it.
+ * QueryPerformanceCounter and ignores the clock id entirely, so every id
+ * below just resolves to the same monotonic counter.
+ *
+ * clockid_t is only needed because panfrost/perf/pan_perf.h returns one from
+ * pan_perf_gpu_clock_id(); the UCRT's <time.h> has clock_t but no clockid_t.
  */
 #include <time.h>
 
@@ -96,6 +100,17 @@ static inline int asprintf(char **strp, const char *fmt, ...)
 #endif
 #ifndef CLOCK_MONOTONIC
 #define CLOCK_MONOTONIC 1
+#endif
+#ifndef CLOCK_MONOTONIC_RAW
+#define CLOCK_MONOTONIC_RAW 4
+#endif
+#ifndef CLOCK_BOOTTIME
+#define CLOCK_BOOTTIME 7
+#endif
+
+#ifndef MALI_COMPAT_CLOCKID_T
+#define MALI_COMPAT_CLOCKID_T 1
+typedef int clockid_t;
 #endif
 
 #ifdef __cplusplus
@@ -119,6 +134,97 @@ static inline int getpagesize(void)
 {
     return 4096;
 }
+#endif
+
+/*
+ * sysconf(_SC_PAGESIZE)
+ * ---------------------
+ * Meson's has_function('sysconf') probe passes here (cross/compat/unistd.h
+ * defines an inline sysconf), so the build gets -DHAVE_SYSCONF and
+ * src/util/os_misc.c takes its sysconf() branch. But os_misc.c only includes
+ * <unistd.h> on Unix, so on Windows the call is undeclared and the definition
+ * unreachable. Both live in this force-include instead, which every
+ * translation unit sees, and <unistd.h> no longer defines the function.
+ * Windows on ARM64 has 4 KiB pages.
+ */
+#ifndef _SC_PAGESIZE
+#define _SC_PAGESIZE 30
+#endif
+#ifndef _SC_PAGE_SIZE
+#define _SC_PAGE_SIZE _SC_PAGESIZE
+#endif
+
+/*
+ * sysconf(_SC_CLK_TCK)
+ * --------------------
+ * panfrost/vulkan/panvk_frame_prof.c converts a "process CPU ticks" value to
+ * seconds through this. Its tick source is /proc/self/stat, which does not
+ * exist here, so the count is always 0 and the value of _SC_CLK_TCK is
+ * immaterial; CLOCKS_PER_SEC (1000 with the UCRT) is the least surprising
+ * answer for Windows.
+ */
+#ifndef _SC_CLK_TCK
+#define _SC_CLK_TCK 2
+#endif
+
+#ifndef MALI_COMPAT_SYSCONF
+#define MALI_COMPAT_SYSCONF 1
+static inline long sysconf(int name)
+{
+    if (name == _SC_PAGESIZE)
+        return 4096;
+    if (name == _SC_CLK_TCK)
+        return 1000;
+    return -1;
+}
+#endif
+
+/*
+ * ARM64_FPCR / ARM64_FPSR
+ * -----------------------
+ * src/util/u_math.c reads and writes the FPCR through the MSVC intrinsics
+ * _ReadStatusReg/_WriteStatusReg when DETECT_CC_MSVC. clang's <intrin.h>
+ * declares those, but the register numbers they take are defined in MSVC's
+ * <arm64intr.h>, and clang's copy of that header ships only the barrier enum
+ * (measured: clang 20.1.8, arm64intr.h has no ARM64_FPCR). The build stops at
+ *
+ *     error: use of undeclared identifier 'ARM64_FPCR'
+ *
+ * ARM64_SYSREG below is MSVC's own encoding (arm64intr.h 14.50.35717), so the
+ * numbers match what clang's intrinsics expect.
+ */
+#if defined(_M_ARM64) || defined(__aarch64__)
+#ifndef ARM64_SYSREG
+#define ARM64_SYSREG(op0, op1, crn, crm, op2) \
+    ((((op0) & 1) << 14) | (((op1) & 7) << 11) | (((crn) & 15) << 7) | \
+     (((crm) & 15) << 3) | ((op2) & 7))
+#endif
+#ifndef ARM64_FPCR
+#define ARM64_FPCR ARM64_SYSREG(3, 3, 4, 4, 0)
+#endif
+#ifndef ARM64_FPSR
+#define ARM64_FPSR ARM64_SYSREG(3, 3, 4, 4, 1)
+#endif
+#endif /* _M_ARM64 */
+
+/*
+ * uint / uchar
+ * ------------
+ * The BSD/glibc spellings come from <sys/types.h> on Unix; the UCRT has no
+ * equivalent, so the FourFectVK v9 code that uses them - src/poly/geometry.h's
+ * poly_geometry_params (DEVICE(uint), DEVICE(uchar)) and its helpers - stops at
+ *
+ *     error: unknown type name 'uint'; did you mean 'int'?
+ *
+ * which also collapses that struct's size and trips its
+ * `sizeof(poly_geometry_params) == 79 * 4` static_assert (a cascade, not a
+ * separate ABI problem: every use is a pointee type, so only the name matters).
+ * Only the two names the tree actually reaches are provided; the rest of
+ * <sys/types.h>'s vocabulary is MariaDB-of-the-90s and not worth guessing at.
+ */
+#ifndef MALI_COMPAT_UINT_DEFINED
+#define MALI_COMPAT_UINT_DEFINED 1
+typedef unsigned int uint;
 #endif
 
 /*
@@ -211,6 +317,115 @@ static inline int pthread_mutex_unlock(pthread_mutex_t *m)
 #if (defined(__aarch64__) || defined(_M_ARM64)) && !defined(MALI_NO_FLOAT16_RENAME)
 #include <arm_neon.h>
 #define float16_t mesa_float16_t
+#endif
+
+/*
+ * fcntl / F_DUPFD_CLOEXEC
+ * -----------------------
+ * panfrost/lib/kmod/kbase_kmod.c duplicates dma-buf descriptors with
+ *
+ *     fcntl(fd, F_DUPFD_CLOEXEC, 3)
+ *
+ * The UCRT's <fcntl.h> has the O_* flags and _open but no fcntl() at all, and
+ * no F_DUPFD* constants. Both are declared here rather than in a compat
+ * <fcntl.h> so the SDK header keeps providing the O_* flags. The definition is
+ * in runtime/mali_drm.cpp (plain _dup(); the minimum-descriptor hint and
+ * close-on-exec are meaningless on Windows). It is only reachable from the
+ * dma-buf share/export paths, which stay disabled on Windows.
+ */
+#ifndef F_DUPFD
+#define F_DUPFD          0
+#endif
+#ifndef F_DUPFD_CLOEXEC
+#define F_DUPFD_CLOEXEC  1030   /* Linux value; read only by our shim */
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int fcntl(int fd, int cmd, ...);
+
+#ifdef __cplusplus
+}
+#endif
+
+/*
+ * strcasecmp / strncasecmp
+ * ------------------------
+ * glibc's <string.h> declares these when _DEFAULT_SOURCE is in effect, so
+ * portable Mesa code calls them after including only <string.h> (pan_trace.c's
+ * tracepoint filter does exactly that). The UCRT has no <strings.h> and no
+ * such names, hence the declarations here; the definitions are in
+ * runtime/mali_posix.cpp and cross/compat/strings.h mirrors them for the
+ * sources that do include <strings.h> explicitly.
+ */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int strcasecmp(const char *a, const char *b);
+int strncasecmp(const char *a, const char *b, size_t n);
+
+#ifdef __cplusplus
+}
+#endif
+
+/*
+ * strndup
+ * -------
+ * Mesa already *defines* this for Windows in src/util/strndup.c (that file is
+ * gated on _WIN32 and is compiled into libmesa_util here -- the link would fail
+ * with a duplicate symbol if we also defined it). What is missing is the
+ * declaration: portability-aware callers include "util/strndup.h", but
+ * panfrost/vulkan/panvk_vX_shader.c relies on glibc's <string.h> declaring it,
+ * so the call is an implicit-declaration error. Declaring it here reproduces
+ * the glibc situation without touching Mesa. The signature must match
+ * src/util/strndup.h exactly.
+ */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+char *strndup(const char *str, size_t max);
+
+#ifdef __cplusplus
+}
+#endif
+
+/*
+ * strtok_r
+ * --------
+ * POSIX (declared by <string.h> on glibc, no UCRT equivalent); panvk's
+ * physical-device setup uses it to split a frequency list. The UCRT's
+ * strtok_s() has identical semantics -- same arguments, same "pass NULL to
+ * continue, state in *saveptr" contract, same NULL return at the end -- so this
+ * is a rename rather than a reimplementation. It is a macro for the same reason
+ * alloca is: nothing here needs to take its address, and a macro cannot leave a
+ * declaration without a definition behind.
+ */
+#ifndef strtok_r
+#define strtok_r(str, delim, saveptr) strtok_s((str), (delim), (saveptr))
+#endif
+
+/*
+ * alloca / PATH_MAX
+ * -----------------
+ * glibc's <stdlib.h> pulls in <alloca.h> under _DEFAULT_SOURCE, so portable
+ * Mesa code calls alloca() after including only <stdlib.h>
+ * (bifrost/bi_spill_ssa.c does). clang has __builtin_alloca on every target;
+ * route the name there rather than to UCRT's _alloca, which is an intrinsic
+ * the MSVC front end special-cases and is not a plain function.
+ *
+ * PATH_MAX has no Windows equivalent (UCRT has _MAX_PATH = 260, too small for
+ * the temp-path buffers Mesa builds). Use the Linux value.
+ */
+#ifndef alloca
+#define alloca __builtin_alloca
+#endif
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
 #endif
 
 #endif /* _MSC_VER */

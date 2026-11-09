@@ -26,6 +26,8 @@
  */
 
 /* --- UCRT targets (underscored names, present in ucrt.lib) ---------------- */
+#include <stddef.h>
+
 extern "C" int  __cdecl _read(int fd, void *buf, unsigned int count);
 extern "C" int  __cdecl _write(int fd, const void *buf, unsigned int count);
 extern "C" int  __cdecl _close(int fd);
@@ -39,14 +41,15 @@ extern "C" int  __cdecl _dup(int fd);
 extern "C" int  __cdecl _dup2(int oldfd, int newfd);
 extern "C" char *__cdecl _strdup(const char *s);
 extern "C" int  __cdecl _stricmp(const char *a, const char *b);
+extern "C" int  __cdecl _strnicmp(const char *a, const char *b, size_t n);
 
 #define MALI_ALIAS(ret, name, target, params, args)      \
     extern "C" ret __cdecl name params { return target args; } \
     extern "C" ret(__cdecl *__imp_##name) params = name;
 
-/* read/write keep the UCRT signatures. open()/close() moved to mali_drm.cpp:
- * those have to recognise synthetic DRM fds as well as CRT file descriptors. */
-MALI_ALIAS(int,  read,  _read,  (int fd, void *buf, unsigned int count), (fd, buf, count))
+/* read and write keep the UCRT signatures, except that read() moved to
+ * mali_drm.cpp: the kbase device fd delivers completion records through it, so
+ * it has to recognise synthetic fds (like open/close below). */
 MALI_ALIAS(int,  write, _write, (int fd, const void *buf, unsigned int count), (fd, buf, count))
 MALI_ALIAS(long, lseek, _lseek, (int fd, long offset, int origin), (fd, offset, origin))
 MALI_ALIAS(int,  unlink, _unlink, (const char *path), (path))
@@ -59,6 +62,11 @@ MALI_ALIAS(int,   dup,    _dup,    (int fd), (fd))
 MALI_ALIAS(int,   dup2,   _dup2,   (int oldfd, int newfd), (oldfd, newfd))
 MALI_ALIAS(char *, strdup, _strdup, (const char *s), (s))
 MALI_ALIAS(int,   stricmp, _stricmp, (const char *a, const char *b), (a, b))
+/* <strings.h> spellings (BSD): panfrost's pan_env.h calls strcasecmp() to
+ * parse the PAN_* knobs, and clang-cl has no <strings.h> - see
+ * cross/compat/strings.h. */
+MALI_ALIAS(int,   strcasecmp,  _stricmp,  (const char *a, const char *b), (a, b))
+MALI_ALIAS(int,   strncasecmp, _strnicmp, (const char *a, const char *b, size_t n), (a, b, n))
 
 /* open() and close() live in mali_drm.cpp because they must distinguish the
  * synthetic DRM render node (and sync-file fds) from ordinary CRT files. */

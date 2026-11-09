@@ -1,0 +1,65 @@
+diff --git a/src/panfrost/compiler/pan_nir.h b/src/panfrost/compiler/pan_nir.h
+index 95da209..696a33d 100644
+--- a/src/panfrost/compiler/pan_nir.h
++++ b/src/panfrost/compiler/pan_nir.h
+@@ -272,8 +272,8 @@ bool pan_nir_lower_divergent_scratch(nir_shader *shader, unsigned arch);
+ PRAGMA_DIAGNOSTIC_PUSH
+ PRAGMA_DIAGNOSTIC_ERROR(-Wpadded)
+ struct pan_bi_tex_flags {
+-   bool skip : 1;
+-   bool explicit_lod : 1;
++   unsigned skip : 1;
++   unsigned explicit_lod : 1;
+    unsigned _pad : 14;
+    unsigned sampler_idx : 8;
+    unsigned texture_idx : 8;
+@@ -293,22 +293,22 @@ nir_intrinsic_pan_bi_tex_flags(const nir_intrinsic_instr *instr)
+ PRAGMA_DIAGNOSTIC_PUSH
+ PRAGMA_DIAGNOSTIC_ERROR(-Wpadded)
+ struct pan_va_tex_flags {
+-   bool skip : 1;
+-   bool wide_indices : 1;
+-   bool array_enable : 1;
+-   bool texel_offset : 1;
+-   bool compare_enable : 1;
++   unsigned skip : 1;
++   unsigned wide_indices : 1;
++   unsigned array_enable : 1;
++   unsigned texel_offset : 1;
++   unsigned compare_enable : 1;
+    unsigned lod_mode : 3;
+-   bool derivative_enable : 1;
+-   bool force_delta_enable : 1;
+-   bool lod_bias_disable : 1;
+-   bool lod_clamp_disable : 1;
++   unsigned derivative_enable : 1;
++   unsigned force_delta_enable : 1;
++   unsigned lod_bias_disable : 1;
++   unsigned lod_clamp_disable : 1;
+    /* For 1D, 2D and 3D textures, this makes the hardware read an extra q
+     * coordinate and divide the other coordinates by it. For cube maps, it
+     * instead makes the hardware build the cube map descriptor internally
+     * from the raw direction vector.
+     */
+-   bool projection_enable : 1;
++   unsigned projection_enable : 1;
+    unsigned _pad : 19;
+ };
+ PRAGMA_DIAGNOSTIC_POP
+diff --git a/src/panfrost/vulkan/panvk_shader.h b/src/panfrost/vulkan/panvk_shader.h
+index de3bf47..f3734e0 100644
+--- a/src/panfrost/vulkan/panvk_shader.h
++++ b/src/panfrost/vulkan/panvk_shader.h
+@@ -504,8 +504,10 @@ struct panvk_shader_variant {
+ struct panvk_tess_info {
+    enum tess_primitive_mode mode : 8;
+    enum gl_tess_spacing spacing : 8;
+-   bool points;
+-   bool ccw;
++   unsigned points : 1;
++   unsigned _pad0 : 7;
++   unsigned ccw : 1;
++   unsigned _pad1 : 7;
+ };
+ static_assert(sizeof(struct panvk_tess_info) == 4, "packed");
+ 

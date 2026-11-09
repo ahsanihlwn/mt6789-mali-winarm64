@@ -33,7 +33,17 @@ struct pollfd {
 #define POLLHUP  0x0010
 #define POLLNVAL 0x0020
 
+/* Declared, not defined: <time.h> owns the definition and the C and C++
+ * spellings agree, so a forward declaration keeps this header light. */
+struct timespec;
+
 int poll(struct pollfd *fds, unsigned long nfds, int timeout);
+
+/* kbase_kmod.c polls the kbase fd with a nanosecond timeout (CSF
+ * notifications, KCPU fences). The signal mask is ignored: it is always NULL
+ * at every call site, and there are no POSIX signals here. */
+int ppoll(struct pollfd *fds, unsigned long nfds,
+          const struct timespec *timeout, const void *sigmask);
 
 #ifdef __cplusplus
 }
