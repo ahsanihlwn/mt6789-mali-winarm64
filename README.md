@@ -83,7 +83,9 @@ stack are laid out in [`windrv/GRAPHICS-STACK.md`](windrv/GRAPHICS-STACK.md).
 windrv/
   ARCHITECTURE.md        design of the KMD, ABI and job model
   GRAPHICS-STACK.md      Vulkan, OpenGL and DirectX 12 on top of the KMD
+  V9-PANVK-PLAN.md       Valhall v9 PanVK: where the backend is and the port plan
   HARDWARE-MT6789.md     register map, power/clock topology, SoC facts
+  MMU-PAGE-TABLES.md     AArch64 4K page tables: both root causes + bisect method
   ROADMAP.md             phases and current validation status
   WDDM-PATH.md           plan for making Windows enumerate Mali as a GPU
   PANVK-SHIM.md          PanVK (Jalur B): panfrost/DRM -> our ABI, gaps, ABI v3

@@ -197,13 +197,14 @@ serta HANDLE renderonly/panfrost winsys (`0010`/`0011`). Semua patch di-reset +
 apply ulang oleh `tools/patch-mesa.ps1`; tidak ada edit Mesa tangan yang
 tersisa.
 
-**Tembok sebenarnya sekarang: Valhall v9.** Build di atas menghasilkan backend
-**v6/v7 (JM, Bifrost) + v10 (CSF)**, sedangkan **PanVK upstream belum mendukung
-v9** (Mali-G57, GPU tablet ini):
+**Tembok sebenarnya: Valhall v9 — tapi tidak lagi "tidak ada backend".**
+Build 25.0.7 di atas menghasilkan backend **v6/v7 (JM, Bifrost) + v10 (CSF)**;
+memang benar **PanVK di 25.0.7 belum mendukung v9**:
 
 - `external/mesa/docs/drivers/panfrost.rst` (25.0.7) mengosongkan kolom
   **Vulkan** untuk `G57` / `Valhall (v9)` — hanya OpenGL/GLES 3.1 + OpenCL.
 - `src/panfrost/vulkan/meson.build` hanya punya `jm_archs = [6, 7]`.
+- `src/panfrost/vulkan/valhall/` cuma berisi `.gitkeep`.
 - `jm/panvk_vX_cmd_draw.c` memakai descriptor Bifrost `RENDERER_STATE`, yang
   tidak ada di genxml v9 (`v9.xml` punya `Shader Program`/`Draw`/`Tiler
   Context`).
@@ -212,8 +213,18 @@ v9** (Mali-G57, GPU tablet ini):
 
 Patch `0004-panvk-enable-valhall-v9` dan `0006-panvk-valhall-jm-fb-preload`
 yang memaksa `libpanvk_v9` diparkir di `mesa/patches/experimental/` (tidak
-di-apply; lihat README di folder itu). Jadi DLL itu membuktikan **port + shim
-jalan end-to-end**, bukan menggerakkan GPU ini. Konsekuensinya ada di §8.
+di-apply; lihat README di folder itu).
+
+**Pembaruan 2026-11-09 — rencana berubah, lihat
+[`V9-PANVK-PLAN.md`](V9-PANVK-PLAN.md).** Backend v9 **sudah ada**, hanya bukan
+di Mesa 25.0.7: `Noysz/panvk-g99-jm` (FourFectVK) memelihara patch stack PanVK
+untuk **Mali-G57 MC2 / Helio G99 (MT6789)** di atas Valhall **v9 Job Manager**,
+berbasis upstream Mesa **26.3.0-devel (`feeadb5f`)**, dengan pengujian CTS
+(5.658 kasus, 14 fail) dan bring-up DXVK yang sudah lulus. Konsekuensinya:
+Jalur B berubah dari *"tulis backend baru"* menjadi *"naikkan Mesa + port patch
+stack"* — pekerjaan berbatas, bukan riset terbuka. Hasil yang dipublikasikan
+semuanya **Android arm64 (Winlator)**, jadi bagian Windows ARM64 + KMD kita
+tetap yang harus dibuktikan sendiri.
 
 ### 2.3 Shader — kompilasi vs cache
 
@@ -422,10 +433,16 @@ yang di-hard-code, jadi repo bisa di-build di mesin lain.
 
 ## 8. Risiko (dicatat supaya tidak jadi kejutan)
 
-- **Valhall v9 tidak punya backend Vulkan.** ⚠️ BLOCKER render GPU untuk G57.
-  PanVK upstream mendukung v6/v7/v10, bukan v9 (§2.2). Terukur: DLL PanVK untuk
-  Windows ARM64 **sudah bisa di-link** (11.7 MB) — jadi ini bukan soal build,
-  tapi backend yang memang belum ada.
+- **Valhall v9 tidak punya backend Vulkan di Mesa 25.0.7.** ⚠️ BLOCKER render
+  GPU untuk G57 (PanVK upstream 25.0.7: v6/v7/v10, bukan v9 — §2.2). DLL PanVK
+  untuk Windows ARM64 **sudah bisa di-link** (11.7 MB) — jadi bukan soal build,
+  tapi backend yang belum ada di pin kita.
+  **Diperbarui 2026-11-09:** backend v9 ada di luar pin kita —
+  `Noysz/panvk-g99-jm` (FourFectVK) memelihara patch stack v9 JM untuk G57 MC2
+  di atas Mesa 26.3.0-devel, dengan CTS + bring-up DXVK. Baca
+  [`V9-PANVK-PLAN.md`](V9-PANVK-PLAN.md). Risiko bergeser dari "harus menulis
+  backend" ke "rebase 9 patch Windows + 5 grup patch upstream, dan hasilnya baru
+  terbukti di Android, bukan Windows ARM64".
 - **"GL lewat Gallium panfrost" gugur (2026-11-09).** Klaim lama bahwa panfrost
   GL adalah "target render v9 yang realistis" **salah di Windows**: frontend
   WGL/EGL Windows hanya mendukung `d3d12`/`zink`/`llvmpipe`/`softpipe`

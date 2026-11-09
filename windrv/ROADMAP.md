@@ -200,13 +200,18 @@ usable:
     Mesa's Windows frontend only selects `d3d12`/`zink`/`llvmpipe`/`softpipe` —
     never `panfrost` (`src/gallium/targets/wgl/wgl.c:123-137`). See
     [`DEPLOY.md`](DEPLOY.md) §3 and [`GRAPHICS-STACK.md`](GRAPHICS-STACK.md) §3.1.
-  - [ ] **The v9 gap.** Upstream PanVK supports Valhall v6/v7 (Bifrost JM) and
-    v10 (CSF), **not v9** (G57). So the linked DLL does not drive this GPU.
-    This is now the **single gate** for Vulkan, Zink/OpenGL, DXVK and vkd3d.
-    Options (see [`GRAPHICS-STACK.md`](GRAPHICS-STACK.md) §2.2/§8):
-    (a) write a Valhall-JM v9 Vulkan backend (new backend, not a port) — the only
-    route that unblocks everything; (b) software Vulkan (lavapipe) under vkd3d as
-    a stopgap for DX12 correctness, not speed.
+  - [ ] **The v9 gap — downgraded from "write a backend" to "port a stack"
+    (2026-11-09).** Mesa 25.0.7 (our pin) has no v9 PanVK, but the backend now
+    exists: `Noysz/panvk-g99-jm` (FourFectVK) maintains a v9 **Job Manager**
+    PanVK patch stack for **G57 MC2 / Helio G99 (MT6789)** on upstream Mesa
+    26.3.0-devel, validated with CTS (5,658 cases, 14 fail) and DXVK bring-up on
+    Android/Winlator. Plan, patch order, winsys options (adopt Mesa's `pan_kmod`
+    kbase backend vs. keep our libdrm shim) and risks:
+    [`V9-PANVK-PLAN.md`](V9-PANVK-PLAN.md). This is still the gate for Vulkan,
+    Zink/OpenGL, DXVK and vkd3d, but it is now bounded work: rebase Mesa, port
+    the 9 Windows patches, apply the 5 upstream patch groups, re-link for Windows
+    ARM64 and prove it on the tablet. (b) software Vulkan (lavapipe) under vkd3d
+    remains a stopgap for DX12 correctness, not speed.
   - [x] **Win32 WSI** (`VK_KHR_surface` + `VK_KHR_win32_surface` +
     `VK_KHR_swapchain`): surface binding, client-area caps, BGRA formats, FIFO,
     swapchain images as KMD BOs, and `vkQueuePresentKHR` as a GDI
