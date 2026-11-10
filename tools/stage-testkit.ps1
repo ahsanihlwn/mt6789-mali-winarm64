@@ -16,7 +16,8 @@
     kmd\build\malitest.exe                          KMD bring-up tool
     umd\build\mali_vk_icd.dll + mali_g57_icd.json   Jalur A Vulkan ICD
     umd\build\mali_vk_smoke.exe                     Jalur A smoke test
-    mesa\...\vulkan_panfrost.dll                    Jalur B Vulkan (links, no v9)
+    mesa\...\vulkan_panfrost.dll                    Jalur B PanVK ICD (v9, DEPLOY §4)
+    mesa\build\vk-smoke\panvk_smoke.exe             PanVK first-run validation (DEPLOY §4)
     mesa\...\libgallium_wgl.dll + opengl32.dll      Mesa GL artefacts (see DEPLOY §3)
     mesa\build\gl-smoke\mali_gl_smoke.exe           offscreen GL probe (DEPLOY §3)
     mesa\...\z-1.dll                                zlib, required by libgallium_wgl
@@ -49,6 +50,7 @@ $items = [ordered]@{
     'mali_g57_icd.json'     = @(Join-Path $umd 'build\mali_g57_icd.json')
     'mali_vk_smoke.exe'     = @(Join-Path $umd 'build\mali_vk_smoke.exe')
     'vulkan_panfrost.dll'   = @(Join-Path $mesa 'build\mesa\src\panfrost\vulkan\vulkan_panfrost.dll')
+    'panvk_smoke.exe'       = @(Join-Path $mesa 'build\vk-smoke\panvk_smoke.exe')
     'libgallium_wgl.dll'    = @(Join-Path $mesa 'build\mesa-gl\src\gallium\targets\wgl\libgallium_wgl.dll')
     'opengl32.dll'          = @(Join-Path $mesa 'build\mesa-gl\src\gallium\targets\libgl-gdi\opengl32.dll')
     'mali_gl_smoke.exe'     = @(Join-Path $mesa 'build\gl-smoke\mali_gl_smoke.exe')

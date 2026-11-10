@@ -1,0 +1,24 @@
+diff --git a/src/panfrost/vulkan/panvk_physical_device.c b/src/panfrost/vulkan/panvk_physical_device.c
+index 7556450..cea0cf8 100644
+--- a/src/panfrost/vulkan/panvk_physical_device.c
++++ b/src/panfrost/vulkan/panvk_physical_device.c
+@@ -129,8 +129,18 @@ create_kmod_dev(struct panvk_physical_device *device,
+    device->kmod.dev = pan_kmod_dev_create(fd, flags, &instance->kmod.allocator);
+ 
+    if (!device->kmod.dev) {
++      int saved_errno = errno;
++
+       close(fd);
+-      return panvk_errorf(instance, VK_ERROR_OUT_OF_HOST_MEMORY,
++      /* ENODEV means this build has no kmod backend for the node's kernel
++       * driver (pan_kmod_dev_create() sets it when the driver name is not in
++       * its table).  That is "not our node", not "out of memory": reporting it
++       * as incompatible lets enumeration move on to the next node - on a
++       * kbase-only build that is /dev/mali0 - instead of failing
++       * vkEnumeratePhysicalDevices() outright. */
++      return panvk_errorf(instance,
++                          saved_errno == ENODEV ? VK_ERROR_INCOMPATIBLE_DRIVER
++                                                : VK_ERROR_OUT_OF_HOST_MEMORY,
+                           "cannot create device");
+    }
+ 

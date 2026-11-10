@@ -400,6 +400,20 @@ Windows-only defects that had to be fixed first are written up in
 [`mesa/README.md`](mesa/README.md). It has not been loaded on the tablet, so
 none of the behaviour above is hardware-verified yet.
 
+**Follow-up (2026-11-10), before the first tablet run:** tracing the v9 stack's
+enumeration showed that route A1 was not reachable yet. `panvk_instance.c` walks
+DRM nodes first; our shim answered `/dev/dri/renderD128` with the version name
+`"panfrost"`, but the Vulkan build is `-Dpanfrost-kmds=kbase,panthor`, so
+`pan_kmod_dev_create()` found no backend and `vkEnumeratePhysicalDevices`
+returned `VK_ERROR_OUT_OF_HOST_MEMORY` instead of continuing. Patch `0011`
+turns that `ENODEV` into `VK_ERROR_INCOMPATIBLE_DRIVER`, and the shim now
+exposes the node the v9 path actually wants: `access("/dev/mali0")` answers,
+`open()` accepts it, and `drmGetVersion()` reports `"kbase"` for that fd (the
+node, not the process, decides the name). With those, the DRM node is skipped
+by PanVK's own gate and `/dev/mali0` is driven through the kbase UAPI as
+designed. `build\vk-smoke\panvk_smoke.exe` validates the whole path in stages
+and ends with a `vkCmdFillBuffer` round trip; DEPLOY §4 is the runbook.
+
 ## 4. Risks / open questions
 
 - **Windows, not Android.** Every published result is on arm64 **Android**

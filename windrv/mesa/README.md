@@ -20,7 +20,7 @@ measured against this commit. Three consequences:
 | Change | Where |
 | --- | --- |
 | The v9 stack is applied as a base layer, before our patches | `patches-v9/fourfectvk/` (5 patches) |
-| Project patches renumbered, rebased, pruned to a contiguous set | `patches/0001`–`0010` |
+| Project patches renumbered, rebased, pruned to a contiguous set | `patches/0001`–`0011` |
 | Panfrost shader libraries pregenerated, so CLC/LLVM is not needed | `pregen/` + `-Dpanfrost-pregen=true` |
 
 `tools\gen-libpan-wsl.sh` (Linux/WSL) regenerates `pregen/`; regenerating from
@@ -47,10 +47,10 @@ on the tablet. Routes, evidence and the SAME_VA decision:
 | Property | Value |
 | --- | --- |
 | Machine | `IMAGE_FILE_MACHINE_ARM64` |
-| Size / SHA-256 | 22,635,520 B / `6ECBD7B1D3F26FF0FFB6C5BC02DCFE74078B06CC36031BB1988A9BB2CFA0E911` |
+| Size / SHA-256 | 22,635,520 B / `DFF3504A9B79A193B540D9EDDFECA0DC5A3EB5455EAD5D58C704C1E4AEAF3085` |
 | Exports | `vk_icdGetInstanceProcAddr`, `vk_icdGetPhysicalDeviceProcAddr`, `vk_icdNegotiateLoaderICDInterfaceVersion` |
 | Imports | `KERNEL32`, `api-ms-win-crt-*`, `GDI32`, `USER32`, `SETUPAPI`, `ntdll` - no `VCRUNTIME140`/`MSVCP140` |
-| Patch stack | 5 FourFectVK base + 10 project patches at `feeadb5f` |
+| Patch stack | 5 FourFectVK base + 11 project patches at `feeadb5f` |
 
 The import list is the second proof (after `malitest.exe`) that the CRT-free
 recipe holds for a Mesa-sized binary: the UCRT is reached through its API-set
@@ -59,6 +59,38 @@ here - the MSVC bitfield ABI, `PACKED` becoming a no-op, the missing POSIX
 surface, and a panvk target that exported nothing at all - each written up
 below. **The DLL has not been loaded on the tablet yet**, so this is a build
 result, not a hardware result.
+
+### First-run path, as the driver actually walks it (2026-11-10)
+
+Reading the v9 stack's own enumeration before writing the probe found two
+things that would have made the first tablet run fail with a misleading error,
+and neither is visible from the build:
+
+1. **`vkEnumeratePhysicalDevices` would have aborted.** `panvk_instance.c`
+   walks DRM nodes first and then kbase nodes. Our shim advertises
+   `/dev/dri/renderD128`, whose `drmGetVersion()` name was `"panfrost"` - but
+   the Vulkan build is configured with `-Dpanfrost-kmds=kbase,panthor`, so
+   `pan_kmod_dev_create()` has no `"panfrost"` backend and returned `NULL`.
+   `panvk_physical_device.c` then reported `VK_ERROR_OUT_OF_HOST_MEMORY` and
+   enumeration returned that instead of moving on. Patch `0011` maps `ENODEV`
+   to `VK_ERROR_INCOMPATIBLE_DRIVER`, which is what the caller already handles
+   with `continue`.
+2. **The kbase node did not exist.** `panvk_instance.c` probes `/dev/mali0`
+   with `access()` and then opens it. The shim only intercepted `/dev/dri/`, so
+   `access()` reached the filesystem, failed, and the kbase loop was skipped
+   entirely. `runtime/mali_posix.cpp` now answers `/dev/mali0` for `access()`,
+   `open()` accepts it, and `drmGetVersion()` reports `"kbase"` for that fd -
+   the node, not the process, decides the name.
+
+With both, the order on the tablet is: DRM node opened, named `"kbase"`, not
+accepted by PanVK's `"panfrost"`/`"panthor"` gate, closed; then `/dev/mali0`
+opened and driven through the kbase UAPI. The KMD device is exclusive, so that
+open/close has to be sequential - it is.
+
+`build\vk-smoke\panvk_smoke.exe` (19,456 B, `65758A41D50A41A0DFB2519CD12A70C4141241D664412F9152AF58FE2B37C955`)
+is the probe that walks that path stage by stage and ends with a real
+`vkCmdFillBuffer` round trip. `tools\build-vk-smoke.ps1` builds it; DEPLOY §4
+describes how to run it.
 
 ## Status (measured on this host, 2026-11-08, on the old `mesa-25.0.7` pin)
 
@@ -427,7 +459,7 @@ mesa/
   runtime/mali_tls.cpp            C++ thread-safe statics + thread_local TLS guard
   runtime/mali_vcrt.cpp           mem*/str*, _Mtx_*, _Xlength_error, _Throw_Cpp_error
   runtime/mali_aarch64.s          __chkstk, _setjmpex / longjmp
-  patches/*.patch                 portability patches, contiguous 0001-0010,
+  patches/*.patch                 portability patches, contiguous 0001-0011,
                                   applied by tools/patch-mesa.ps1
   patches-v9/fourfectvk/*.patch   the vendored FourFectVK v9 stack (5 patches),
                                   applied *before* patches/ by the same script
@@ -446,6 +478,11 @@ mesa/
   tools/build-runtime.ps1         build runtime\ + prove a C exe and an STL DLL link
   tools/link-probe.ps1            measure what each SDK library contributes to an ARM64 link
   tools/build-smoke.ps1           configure + build the smoke target
+  tools/gl-smoke/                 offscreen OpenGL probe (DEPLOY §3)
+  tools/build-gl-smoke.ps1        builds it → build\gl-smoke\mali_gl_smoke.exe
+  tools/vk-smoke/                 PanVK first-run probe: ICD interface, device,
+                                  vkCmdFillBuffer round trip (DEPLOY §4)
+  tools/build-vk-smoke.ps1        builds it → build\vk-smoke\panvk_smoke.exe
 ```
 
 Generated, git-ignored: `.venv\`, `build\`. Fetched source goes to `external\mesa-v9\`.
@@ -459,6 +496,7 @@ cd windrv\mesa
 .\tools\fetch-mesa.ps1     # pin upstream Mesa at the pinned commit into external\mesa-v9
 .\tools\patch-mesa.ps1     # reset the checkout, apply the v9 stack + patches, stage pregen\
 .\tools\build-mesa.ps1 -Kind vulkan   # patch + configure + compile → vulkan_panfrost.dll
+.\tools\build-vk-smoke.ps1            # → build\vk-smoke\panvk_smoke.exe (DEPLOY §4)
 .\tools\fetch-flexbison.ps1           # GL only: vendor win_flex/win_bison (git-ignored)
 .\tools\build-mesa.ps1 -Kind gl       # → libgallium_wgl.dll + opengl32.dll
 .\tools\link-probe.ps1     # show what each SDK library contributes to the link

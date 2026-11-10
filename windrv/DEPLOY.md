@@ -30,16 +30,18 @@ first — do not copy a partial kit.
 | `mali_vk_smoke.exe` | `umd\build` | Jalur A V1-V5 smoke |
 | `libgallium_wgl.dll`, `opengl32.dll`, `z-1.dll` | `mesa\build\mesa-gl` | Mesa GL artefacts — see §3 (not reachable on Windows) |
 | `mali_gl_smoke.exe` | `mesa\build\gl-smoke` | offscreen GL probe (§3) |
-| `vulkan_panfrost.dll` | `mesa\build\mesa` | Mesa PanVK (links; **no v9 backend**, see caveat) |
+| `vulkan_panfrost.dll` | `mesa\build\mesa` | PanVK v9 ICD (§4) |
+| `panvk_smoke.exe` | `mesa\build\vk-smoke` | PanVK first-run validation (§4) |
 
 `z-1.dll` is not optional: `libgallium_wgl.dll` imports `crc32` from it.
 
-The GL probe is built separately from Mesa (it needs only the runtime shim):
+The two probes are built separately from Mesa (they need only the runtime shim):
 
 ```powershell
 cd windrv\mesa
-.\tools\build-runtime.ps1        # once
+.\tools\build-runtime.ps1        # once, after any runtime\ change
 .\tools\build-gl-smoke.ps1       # -> build\gl-smoke\mali_gl_smoke.exe
+.\tools\build-vk-smoke.ps1       # -> build\vk-smoke\panvk_smoke.exe
 ```
 
 ---
@@ -150,12 +152,72 @@ render on this device.
 
 ---
 
-## 4. Mesa PanVK (caveat)
+## 4. Mesa PanVK - v9 backend, not yet run on the tablet
 
-`vulkan_panfrost.dll` links and is a valid ICD, but upstream PanVK has **no
-Valhall v9 backend**, so it will not drive this GPU (see `mesa/README.md`). Keep
-it in the kit for completeness and for the v10/v6/v7 paths; do not expect a
-device from it on G57.
+`vulkan_panfrost.dll` is the Valhall v9 PanVK stack (FourFectVK base, Mesa
+`feeadb5f` pinned) built for Windows ARM64. Unlike the upstream driver this one
+**does** claim the G57: `panvk_physical_device.c` groups arch 9 with v6/v7/v14
+and drives it through kbase.
+
+What has been proven: it builds, exports the three ICD entry points, imports
+only `KERNEL32`/`api-ms-win-crt-*`/`GDI32`/`USER32`/`SETUPAPI`/`ntdll`, and
+`panvk_smoke.exe` links against it. What has **not** been proven: that the
+kbase uAPI emulation in `mesa\runtime\mali_drm.cpp` is complete enough for a
+real submission. That is what §4.1 answers.
+
+### 4.1 First run (`panvk_smoke.exe`)
+
+Copy `vulkan_panfrost.dll` and `panvk_smoke.exe` into the same folder on the
+tablet and run the exe. It loads the DLL by name from its own directory, so no
+loader, no registry entry and no `VK_ICD_FILENAMES` are involved.
+
+Prerequisites:
+
+- the KMD must be installed and running, and **nothing else may hold it** - the
+  device is created exclusive (`WdfDeviceInitSetExclusive`), so close
+  `malitest.exe` and any other Mali client first;
+- `PAN_I_WANT_A_BROKEN_VULKAN_DRIVER=1` must be set in the process environment.
+  `panvk_physical_device.c` gates arch 9 on it. The probe sets it itself with
+  `_putenv_s()` before loading the DLL; any other application (DXVK, vkd3d)
+  needs it set in its environment.
+
+The probe runs in stages, so the first failing line names the layer:
+
+| Stage | What it proves |
+| --- | --- |
+| V0 | the DLL is next to the exe, and how many KMD device interfaces exist |
+| V1 | the DLL loads and exports `vk_icdNegotiateLoaderICDInterfaceVersion`, `vk_icdGetInstanceProcAddr`, `vk_icdGetPhysicalDeviceProcAddr` |
+| V2 | loader/ICD interface negotiation (expect 7) |
+| V3 | `vkCreateInstance` |
+| V4 | `vkEnumeratePhysicalDevices` - the ICD opened `/dev/mali0` and kbase `VERSION_CHECK` passed |
+| V5/V6 | device name, memory heaps and queue families (informational) |
+| V7 | `vkCreateDevice` |
+| V8 | buffer, memory, bind, map |
+| V9 | `vkCmdFillBuffer` submitted and completed |
+| V10 | the fill pattern read back correctly |
+
+`RESULT: PASS` requires V1-V4 and V7-V10. V9 is the real test: on PanVK
+`vkCmdFillBuffer` is a compute dispatch through the meta shaders, so a correct
+pattern means shaders compiled, BOs were mapped, the job chain was built and
+the KMD accepted the submit. Cross-check with `malitest.exe --irq` afterwards -
+the job counter must have advanced. If it did not, the CPU wrote the buffer and
+the GPU never ran.
+
+Two things this build depends on, both fixed on 2026-11-10:
+
+- the ICD enumerates through **`/dev/mali0`** (the kbase node). The DRM node
+  `/dev/dri/renderD128` is still advertised for the Gallium path, but this
+  build is configured with `-Dpanfrost-kmds=kbase,panthor`, so `drmGetVersion()`
+  reports `"kbase"` for the mali node and `"panfrost"` only for `/dev/dri/`;
+- patch `0011` makes a node whose kmod backend is not compiled in report
+  `VK_ERROR_INCOMPATIBLE_DRIVER` instead of `VK_ERROR_OUT_OF_HOST_MEMORY`, so
+  enumeration continues to the kbase node instead of aborting.
+
+If V4 reports 0 adapters, read the V0 line first: `kmd interfaces 0` means the
+driver is not installed or not started, and the ICD never had a chance. If V0
+says 1, the next suspect is exclusivity - enumeration opens and closes the DRM
+node before it opens `/dev/mali0`, and a second open while the first handle is
+still alive would fail.
 
 ---
 

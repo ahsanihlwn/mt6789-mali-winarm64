@@ -53,7 +53,17 @@ extern "C" int  __cdecl _strnicmp(const char *a, const char *b, size_t n);
 MALI_ALIAS(int,  write, _write, (int fd, const void *buf, unsigned int count), (fd, buf, count))
 MALI_ALIAS(long, lseek, _lseek, (int fd, long offset, int origin), (fd, offset, origin))
 MALI_ALIAS(int,  unlink, _unlink, (const char *path), (path))
-MALI_ALIAS(int,  access, _access, (const char *path, int mode), (path, mode))
+/* access() is _access() except for the kbase node.  The v9 stack probes
+ * /dev/mali0 with access(path, F_OK) before opening it (panvk_instance.c), and
+ * that node is the shim's own synthetic device, so the filesystem has nothing
+ * to say about it. */
+extern "C" int __cdecl access(const char *path, int mode)
+{
+    if (path && !_stricmp(path, "/dev/mali0"))
+        return 0;
+    return _access(path, mode);
+}
+extern "C" int (__cdecl *__imp_access)(const char *, int) = access;
 MALI_ALIAS(int,  isatty, _isatty, (int fd), (fd))
 MALI_ALIAS(int,  getpid, _getpid, (void), ())
 /* wrk_drm / vk_drm_syncobj.c reach these through their POSIX spellings, which

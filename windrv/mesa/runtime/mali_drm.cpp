@@ -241,6 +241,12 @@ struct MaliDevice {
     uint32_t kbase_ev_head;
     uint32_t kbase_ev_count;
     struct MaliKbaseEvent kbase_ev[MALI_KBASE_MAX_EVENTS];
+
+    /* Which face of the KMD this fd represents: /dev/dri/renderD128 (DRM,
+     * Gallium panfrost) or /dev/mali0 (kbase, PanVK v9).  drmGetVersion()
+     * reports it, and PanVK uses that name to decide whether a node is one it
+     * can drive. */
+    bool     kbase_node;
 };
 
 enum MaliFdKind {
@@ -1222,8 +1228,9 @@ extern "C" drmVersionPtr __cdecl
 drmGetVersion(int fd)
 {
     drmVersionPtr v;
+    struct MaliFd *f = fd_lookup(fd);
 
-    if (!fd_lookup(fd)) {
+    if (!f) {
         errno = ENODEV;
         return NULL;
     }
@@ -1234,9 +1241,14 @@ drmGetVersion(int fd)
         return NULL;
     }
 
-    /* "panfrost" makes pan_kmod_dev_create() pick panfrost_kmod_ops, i.e. the
-     * Job Manager (JM) backend this GPU needs (Valhall v9 is not CSF). */
-    v->name = _strdup("panfrost");
+    /* The node decides the name.  /dev/dri/renderD128 is the DRM face of the
+     * KMD (Gallium panfrost, panfrost_kmod_ops); /dev/mali0 is the kbase face
+     * (PanVK v9, kbase_kmod_ops).  PanVK's DRM probe accepts only "panfrost"
+     * or "panthor" (panvk_physical_device.c:113), so "kbase" makes it skip
+     * that node instead of aborting enumeration - which is what the Vulkan
+     * build needs, since -Dpanfrost-kmds=kbase,panthor cannot create a
+     * "panfrost" device at all. */
+    v->name = _strdup(f->dev && f->dev->kbase_node ? "kbase" : "panfrost");
     v->date = _strdup("20260101");
     v->desc = _strdup("Mali KMD libdrm shim");
     if (!v->name || !v->date || !v->desc) {
@@ -1627,10 +1639,21 @@ is_drm_node(const char *path)
     return path && _strnicmp(path, "/dev/dri/", 9) == 0;
 }
 
+/* The v9 PanVK stack drives the GPU through kbase, and kbase's node is
+ * /dev/mali0 (panvk_instance.c probes /dev/mali0..PAN_KBASE_MAX_NODES-1).  It
+ * is the same KMD handle behind a different name: everything below open()
+ * dispatches on the fd, and ioctl() picks the kbase or DRM decoder from there.
+ */
+static bool
+is_kbase_node(const char *path)
+{
+    return path && _strnicmp(path, "/dev/mali0", 11) == 0;
+}
+
 extern "C" int __cdecl
 open(const char *path, int flags, int mode)
 {
-    if (!is_drm_node(path))
+    if (!is_drm_node(path) && !is_kbase_node(path))
         return _open(path, flags, mode);
 
     {
@@ -1651,6 +1674,7 @@ open(const char *path, int flags, int mode)
         }
         dev->umd = umd;
         dev->next_mmap_off = MALI_MMAP_BASE;
+        dev->kbase_node = is_kbase_node(path);
 
         /* kbase completion is delivered by poll()/read() on this fd, so the
          * device owns an auto-reset event that poll() can wait on.  calloc()
