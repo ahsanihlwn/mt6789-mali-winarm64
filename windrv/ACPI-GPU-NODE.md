@@ -12,7 +12,7 @@ out of source, and each claim names its file.
 ## 1. What to do, in one paragraph
 
 Add an ACPI device node for the Mali-G57 (MT6789) GPU to the P13001L UEFI
-firmware, with `_HID = "MTKMALI"`, a `Memory32Fixed` for `0x13000000`, and
+firmware, with `_HID = "MTK06789"`, a `Memory32Fixed` for `0x13000000`, and
 **three level-triggered interrupt resources (GSIV 428, 429, 430)**. Nothing in
 this repo (`MT6789__WINDRIVER`) needs to change. When the node boots, the
 already-installed KMD stops polling and starts taking real GPU/MMU/JOB
@@ -46,7 +46,10 @@ Source of that behaviour:
 - `windrv/kmd/src/MaliSoc.c:38-40` — the SoC table already carries the GIC SPIs
   and states the mapping: `Windows GSI = SPI + 32 when published via MADT`.
 - `windrv/kmd/MaliKmd.inf` — the driver already advertises
-  `ACPI\MTKMALI` and `ACPI\MTK06789`, so **no INF change is needed**.
+  `ACPI\MTKMALI` and `ACPI\MTK06789`, so **no INF change is needed**. Only the
+  second is usable: ACPI requires the suffix of a string `_HID` to be all hex
+  digits, so iasl rejects `MTKMALI` (error 6035) and the firmware could not
+  build it. `MTK06789` passes and binds the same INF entry.
 
 So the KMD is complete and waiting; the firmware is the only gap.
 
@@ -79,7 +82,7 @@ Two consequences worth stating plainly:
 
 | Item | Value | Where it comes from |
 | --- | --- | --- |
-| `_HID` | `MTKMALI` (alternate accepted: `MTK06789`) | `windrv/kmd/MaliKmd.inf` |
+| `_HID` | `MTK06789` (the only valid spelling — see §2) | `windrv/kmd/MaliKmd.inf:35` |
 | MMIO region | base `0x13000000`, size `0x4000` | `windrv/kmd/src/MaliSoc.c:29` |
 | Interrupt 0 — GPU | DT `GIC_SPI 396` → **GSIV 428** | `MaliSoc.c:39` (`Irqs[0]`) |
 | Interrupt 1 — MMU | DT `GIC_SPI 397` → **GSIV 429** | `MaliSoc.c:39` (`Irqs[1]`) |
@@ -121,6 +124,14 @@ Reference files (current shape):
 This is the lowest-risk option — it mirrors a node that already boots on this
 board, and it can be toggled off without touching the core DSDT.
 
+**Ready-made, in this repo:** `windrv/acpi/MaliGpu.asl` is the table below,
+`windrv/acpi/MaliGpuAml.h` is its compiled AML as a C array (120 bytes, iasl
+20251212), and `windrv/acpi/gen-aml-header.py` regenerates the header from the
+`.asl`. The table compiles with `iasl -ve` at 0 errors / 0 warnings, and its
+disassembly confirms `_HID MTK06789`, `Memory32Fixed(0x13000000, 0x4000)` and
+interrupts `0x1AC/0x1AD/0x1AE` (428/429/430). Copy the two files into
+`Platform/Itel/P13001LPkg/Applications/MaliAcpi/` and follow the UFS steps.
+
 `MaliExperimental.asl`:
 
 ```asl
@@ -130,7 +141,7 @@ DefinitionBlock ("", "SSDT", 2, "P130  ", "MALIGPU", 0x00000001)
     {
         Device (GPU0)
         {
-            Name (_HID, "MTKMALI")          // matches MaliKmd.inf
+            Name (_HID, "MTK06789")         // matches MaliKmd.inf:35
             Name (_UID, Zero)
             Name (_STA, 0x0F)
             Name (_CRS, ResourceTemplate ()
@@ -208,7 +219,7 @@ python .\tools\bridge\p13.py --script <file> --wait 20 --ready-timeout 15 --time
 Pass criteria, in order:
 
 1. **Enumeration** — the device appears as
-   `ACPI\MTKMALI\...` (not `ROOT\SYSTEM\0001`):
+   `ACPI\MTK06789\...` (not `ROOT\SYSTEM\0001`):
    ```
    pnputil /enum-devices /class System
    ```
@@ -267,10 +278,10 @@ Vulkan backend question (`GRAPHICS-STACK.md` §2.2/§8).
 
 ## 10. Definition of done
 
-- ACPI SSDT `MALIGPU` with `_HID MTKMALI`, `Memory32Fixed(0x13000000, 0x4000)`,
+- ACPI SSDT `MALIGPU` with `_HID MTK06789`, `Memory32Fixed(0x13000000, 0x4000)`,
   and interrupts `{428, 429, 430}` (Level/ActiveHigh/Exclusive) builds into the
   firmware.
-- On the tablet: `ACPI\MTKMALI` binds `MaliKmd`; `malitest` shows `IRQ lines 3`
+- On the tablet: `ACPI\MTK06789` binds `MaliKmd`; `malitest` shows `IRQ lines 3`
   with the IRQ-connected capability and non-zero, incrementing per-line counts;
   no job errors.
 - Firmware change and any copy of it documented under `windrv/acpi/` in this
