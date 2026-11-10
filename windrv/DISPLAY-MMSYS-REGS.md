@@ -111,9 +111,9 @@ sebelum menulis register. Ini alasan lain L5b lebih murah daripada L5a.
 
 | Pertanyaan | Kenapa penting | Di mana dicari |
 | --- | --- | --- |
-| Timing panel P13001L (h/v sync, porch, clock, lane rate) | tanpa ini DSI tidak mengunci | DTS **board** (bukan `mt6789.dts` generik) — node `panel@0` / `dsi_panel` |
-| Initial code DSI (per-panel) | panel tertentu butuh sequence khusus | driver panel vendor (`nt36xxx`/`ili9881x` dsb.) |
-| Nilai register OVL/RDMA/DSI | kita hanya punya alamat, belum field | `mediatek_v2/mtk_disp_ovl.c` (ada di `kernel-reference`), `mtk_disp_rdma.c`, `mtk_dsi.c` |
+| Timing panel P13001L (h/v sync, porch, clock, lane rate) | tanpa ini DSI tidak mengunci | sudah separación di [`PANEL-P13001L.md`](PANEL-P13001L.md); sisa: porch/clock |
+| Initial code DSI (per-panel) | panel tertentu butuh sequence khusus | `cust_panel.ko` → `cm_init_cmd` (1347 byte) |
+| Nilai register OVL/RDMA/DSI | kita hanya punya alamat, belum field | `external/mtk-display-ref/` (MTK DRM/DSI sources) |
 | Apakah M4U bisa di-bypass | menyederhanakan L5b secara drastis | `mtk_iommu` (bit bypass di bank), atau uji langsung |
 | DSC dipakai atau tidak | mengubah jalur RDMA→DSI | `clk-mt6789-disp_dsc.c` + DTS board |
 
@@ -132,9 +132,14 @@ Peta di atas sudah dikodekan sebagai tabel per-SoC, persis pola `MaliSoc.c`:
 * `windrv/display/src/MtkDispSoc.c` — tabel **MT6789** (satu-satunya entri saat
   ini) + `MtkDispGetSocDescByName()` + `MtkDispGsiFromSpi()` (Windows GSI =
   SPI + 32).
-* `windrv/display/tools/disp_soc_test.c` — 192 pemeriksaan host: alignment,
+* `windrv/display/tools/disp_soc_test.c` — 203 pemeriksaan host: alignment,
   tidak ada region yang tumpang tindih, pemetaan GSI tertutup, rantai scan-out
-  lengkap, clock ada di daftar. Dijalankan oleh `tools\run-host-tests.ps1`.
+  lengkap, clock ada di daftar, dan deskriptor panel konsisten. Dijalankan oleh
+  `tools\run-host-tests.ps1`.
+* `windrv/display/tools/dtb_read.py` — pembaca device tree tanpa dependency,
+  untuk mengambil konfigurasi panel dari DTB stock.
+* `windrv/display/tools/fetch-mtk-display-ref.ps1` — mengambil sumber DRM/DSI
+  MediaTek ke `external/mtk-display-ref/` (dengan manifest SHA-256).
 
 Menambah SoC lain = menambah satu `MTK_DISP_SOC_DESC`. Tidak ada kode lain yang
 SoC-specific.

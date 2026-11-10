@@ -51,7 +51,7 @@ try {
     )
 
     $objs = @()
-    foreach ($src in @('src\MtkDispSoc.c', 'tools\disp_soc_test.c')) {
+    foreach ($src in @('src\MtkDispSoc.c', 'src\MtkDispPanel.c', 'tools\disp_soc_test.c')) {
         $name = [System.IO.Path]::GetFileNameWithoutExtension($src)
         $obj  = Join-Path $out ('disp_' + $name + '.obj')
         Write-Host ("CC  {0}  (x64)" -f $src)

@@ -121,8 +121,10 @@ windrv/
       device/            INSTALL.CMD + TEST.CMD for the target machine
   display/               display subsystem (MMSYS/DSI) for the L5 ladder
     include/mtk_disp_soc.h per-SoC block map: MMIO, IRQs, scan-out chain
+    include/mtk_disp_panel.h per-board panel descriptor (data, not code)
     src/MtkDispSoc.c     the MT6789 table, measured from the vendor device tree
-    tools/               host test for the descriptor (192 checks)
+    src/MtkDispPanel.c   the P13001L panel (FT8205 / JT130WUF001A01, 1200x1920)
+    tools/               host test for the descriptor (203 checks)
 tools/run-host-tests.ps1 all off-hardware tests (builder bytes + ICD surface)
 tools/bridge/            USB-CDC bridge used to drive the tablet remotely
 ```

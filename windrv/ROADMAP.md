@@ -257,6 +257,15 @@ Two routes, cheap first (see [`WDDM-DISPLAY-MODEL.md`](WDDM-DISPLAY-MODEL.md) §
       and the fixed scan-out chain OVL0 → COLOR0 → AAL0 → GAMMA0 → RDMA0 → DSI0,
       measured from the vendor device tree. `windrv/display/` + host test.
       Inventory written up in [`DISPLAY-MMSYS-REGS.md`](DISPLAY-MMSYS-REGS.md).
+- [x] Panel descriptor for P13001L: FT8205 / JT130WUF001A01, 1200x1920 @ 60.06,
+      4-lane DSI, RGB888, LPM — measured from the stock LK boot log and the stock
+      device tree. Written up in [`PANEL-P13001L.md`](PANEL-P13001L.md). Panel
+      configuration is carried as data, like the vendor's device tree and like
+      Qualcomm's extension INF.
+- [ ] Capture the DSI init sequence and the porches/pixel clock (from the LK
+      LCM table and `cust_panel.ko`). Without the exact DCS init sequence a
+      Windows display driver must not re-initialise the panel: LK already
+      brought it up, and a different init order can leave the glass dark.
 - [ ] **L5b — IddCx indirect display (UMDF).** Register a monitor, receive the
       composed desktop as an IddCx swapchain, copy into a KMD BO, then program
       OVL0 → RDMA0 → DSI0 ourselves. User-mode, cannot brick the panel, one copy

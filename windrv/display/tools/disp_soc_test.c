@@ -13,6 +13,7 @@
 #include <windows.h>
 #include <stdint.h>
 #include "mtk_disp_soc.h"
+#include "mtk_disp_panel.h"
 
 static int g_Failures = 0;
 static int g_Checks   = 0;
@@ -152,6 +153,36 @@ int main(void)
     /* The DSI PHY is a different block from the DSI host. */
     check(d->Regions[MTK_DISP_REGION_DSI0].Base != d->Regions[MTK_DISP_REGION_DSI_PHY].Base,
           "DSI host and DSI PHY are distinct blocks");
+
+    /* --- panel descriptor ------------------------------------------------- */
+    const MTK_DISP_PANEL_DESC *p =
+        MtkDispGetPanelByName("m100t_ft8205_jt130wuf001a01_pen_wuxga");
+    check(p != NULL, "P13001L panel descriptor found");
+    check(MtkDispGetPanelByName("m100t_nonexistent") == NULL, "unknown panel rejected");
+    check(MtkDispGetPanelByName(NULL) == NULL, "NULL panel name rejected");
+
+    if (p) {
+        check(p->Lanes >= 1 && p->Lanes <= 8, "panel lane count is sane");
+        check(p->ColorFormat == MTK_DISP_COLOR_RGB888 ||
+              p->ColorFormat == MTK_DISP_COLOR_RGB666 ||
+              p->ColorFormat == MTK_DISP_COLOR_RGB565, "panel colour format is known");
+        check(p->RefreshMilliHz > 0, "panel refresh rate is set");
+        check(p->Timing.Width > 0 && p->Timing.Height > 0, "panel active size is set");
+        check(p->IcName != NULL && p->IcName[0] != 0, "panel IC name is set");
+        check(p->PanelCode != NULL && p->PanelCode[0] != 0, "panel code is set");
+
+        /* If the init blob is not captured, the flags must say so. */
+        if (p->InitialCommand == NULL) {
+            check((p->Flags & MTK_DISP_PANEL_FLAG_INIT_CAPTURED) == 0,
+                  "uncaptured init sequence is flagged");
+        } else {
+            check(p->InitialCommandLen > 0, "captured init sequence has a length");
+        }
+        if (p->Timing.PixelClockHz == 0) {
+            check((p->Flags & MTK_DISP_PANEL_FLAG_PHY_RATE_PENDING) != 0,
+                  "unknown pixel clock is flagged");
+        }
+    }
 
     t_puts(g_Failures ? "disp_soc_test: FAIL\n" : "disp_soc_test: PASS\n");
     t_puts("checks=");
