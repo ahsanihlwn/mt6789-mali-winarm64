@@ -13,6 +13,7 @@
 # ---------------------------------------------------------------------------
 /windrv/kmd/build/
 /windrv/umd/build/
+/windrv/display/build/
 /windrv/mesa/build/
 /windrv/mesa/.venv/
 /build/

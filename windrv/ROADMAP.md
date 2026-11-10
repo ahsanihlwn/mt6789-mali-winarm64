@@ -253,6 +253,10 @@ usable:
 
 Two routes, cheap first (see [`WDDM-DISPLAY-MODEL.md`](WDDM-DISPLAY-MODEL.md) §5):
 
+- [x] Per-SoC display descriptor: MMIO bases, IRQs (SPI and Windows GSI),
+      and the fixed scan-out chain OVL0 → COLOR0 → AAL0 → GAMMA0 → RDMA0 → DSI0,
+      measured from the vendor device tree. `windrv/display/` + host test.
+      Inventory written up in [`DISPLAY-MMSYS-REGS.md`](DISPLAY-MMSYS-REGS.md).
 - [ ] **L5b — IddCx indirect display (UMDF).** Register a monitor, receive the
       composed desktop as an IddCx swapchain, copy into a KMD BO, then program
       OVL0 → RDMA0 → DSI0 ourselves. User-mode, cannot brick the panel, one copy

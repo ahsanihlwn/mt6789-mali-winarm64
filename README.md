@@ -119,6 +119,10 @@ windrv/
       build-malitest.ps1 builds the user-mode bring-up tool
       malitest.c         bring-up / probe tool (job, MMU, power, regs)
       device/            INSTALL.CMD + TEST.CMD for the target machine
+  display/               display subsystem (MMSYS/DSI) for the L5 ladder
+    include/mtk_disp_soc.h per-SoC block map: MMIO, IRQs, scan-out chain
+    src/MtkDispSoc.c     the MT6789 table, measured from the vendor device tree
+    tools/               host test for the descriptor (192 checks)
 tools/run-host-tests.ps1 all off-hardware tests (builder bytes + ICD surface)
 tools/bridge/            USB-CDC bridge used to drive the tablet remotely
 ```

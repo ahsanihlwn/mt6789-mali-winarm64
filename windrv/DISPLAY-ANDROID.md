@@ -56,8 +56,12 @@ bertemu di buffer.
 Path display yang dideklarasikan `mtk_drm_drv.c` (contoh jalur utama):
 
 ```
-OVL0 -> COLOR0 -> AAL0 -> RDMA0 -> UFOE -> DSI0
+OVL0 -> COLOR0 -> AAL0 -> GAMMA0 -> RDMA0 -> DSI0
 ```
+
+(Catatan: blok setelah AAL0 di MT6789 adalah **GAMMA0**, bukan UFOE — UFOE itu
+nama blok MT6357-era. Peta alamat lengkapnya ada di
+[`DISPLAY-MMSYS-REGS.md`](DISPLAY-MMSYS-REGS.md).)
 
 Artinya: overlay mem-blend layer yang ada di memori, RDMA membacanya ulang
 menjadi stream, DSI mengirimkannya ke panel. GPU tidak muncul di rantai itu sama

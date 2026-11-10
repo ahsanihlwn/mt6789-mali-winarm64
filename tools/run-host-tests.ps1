@@ -9,6 +9,9 @@
     2. Vulkan ICD entry points    every application entry point resolves,
                                   loader interface v2, *Properties2 chaining,
                                   and the Win32 WSI surface/query set
+    3. display SoC descriptor     the measured MMSYS/DSI block map stays
+                                  consistent (aligned, non-overlapping, closed
+                                  GSI mapping, complete scan-out chain)
 
   Test 2 needs external\Vulkan-Headers; if it is absent the step is skipped with
   a pointer to the fetch script rather than failing the whole run. Pass -SkipIcd
@@ -59,6 +62,13 @@ $jc = Join-Path $repo 'windrv\umd\tools\build-jc-test.ps1'
 $rc = Invoke-Step 'job-chain builder unit test (x64)' $jc $toolArgs
 $rows += [pscustomobject]@{
     Test   = 'mali_jc descriptor byte layout'
+    Result = if ($rc -eq 0) { 'PASS' } else { "FAIL (exit $rc)" }
+}
+
+$disp = Join-Path $repo 'windrv\display\tools\build-disp-soc-test.ps1'
+$rc = Invoke-Step 'display SoC descriptor test (x64)' $disp $toolArgs
+$rows += [pscustomobject]@{
+    Test   = 'display SoC descriptor (MMSYS/DSI map)'
     Result = if ($rc -eq 0) { 'PASS' } else { "FAIL (exit $rc)" }
 }
 
