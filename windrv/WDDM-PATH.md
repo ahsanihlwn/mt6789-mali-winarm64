@@ -52,6 +52,13 @@ berdiri sendiri dan itu yang membuat Mali "dikenali".
 > miniport MMSYS) = "panel digerakkan driver kita". L3/L4/L5 adalah tiga
 > pekerjaan berbeda.
 
+> **Koreksi penting (2026-11-10).** Windows ternyata **punya** padanan HWC
+> (MPO) dan jalur present lintas adapter (**CASO**, WDDM 2.9). Bentuk hardware
+> MT6789 — Mali render, MMSYS scan-out — justru kasus yang dirancang CASO.
+> Arsitektur target karenanya **dua adapter**: Mali render-only + MMSYS
+> display-only, bukan satu miniport gabungan. Analisis dan urutan kerjanya:
+> [`WDDM-DISPLAY-MODEL.md`](WDDM-DISPLAY-MODEL.md).
+
 ## 2. Lapis 2 — WDDM render-only adapter
 
 ### 2.1 Kenapa render-only
@@ -158,10 +165,17 @@ Tidak ada implementasi independen di dunia. Yang realistis:
 | V1..V4 | Vulkan ICD → render → DXVK → vkd3d | aplikasi benar-benar dipercepat |
 | W5 | (opsional, jangka panjang) UMD D3D12 | D3D12 native tanpa translasi |
 | D1 | (opsional) UMD D3D11 | DWM/desktop dirender Mali |
-| D2 | (terakhir) display miniport MMSYS/DSI | panel lepas dari BDA, vsync asli |
+| D0 | **IddCx IDD** di atas MMSYS/OVL/DSI | panel digerakkan kode kita, user-mode, satu copy per frame |
+| D2 | (terakhir) display miniport MMSYS/DSI **+ MPO** | panel lepas dari BDA, vsync asli, layer di-offload |
+| D3 | (terakhir) **CASO** antar adapter (R→D) | render Mali scan-out MMSYS, satu copy bukan dua |
 
 W3 sengaja **setelah** W0–W2 karena ketiganya dipakai bersama: WDDM tanpa IRQ asli
 dan tanpa page table akan langsung mentok di `DxgkDdiSubmitCommand`.
+
+D0 (IddCx) sengaja **sebelum** D2/D3: ia berjalan di user-mode, tidak bisa
+mem-brick panel, dan membuktikan jalur MMSYS/OVL/DSI lebih dulu. D2/D3 baru
+layak dikerjakan setelah D0 memberi kita pengetahuan timing dan recovery.
+Detail: [`WDDM-DISPLAY-MODEL.md`](WDDM-DISPLAY-MODEL.md) §5–§6.
 
 ## 6. Batasan yang tetap berlaku (bukan alasan berhenti)
 

@@ -105,6 +105,11 @@ eksplisit di setiap perpindahan tangan.
   Di Windows padanannya fence WDDM (`DxgkCbSignalFence`) atau fence internal kita.
 * **Komposisi terpisah dari scan-out.** Di Android: SurfaceFlinger vs HWC. Di
   Windows: DWM vs VidPn.
+* **Padanan HWC di Windows adalah MPO, dan padanan dma-buf lintas blok adalah
+  CASO** (`CrossAdapterResourceScanout`, WDDM 2.9). Karena Mali tidak punya
+  scan-out, arsitektur target kita bukan satu miniport gabungan melainkan dua
+  adapter (Mali render-only + MMSYS display-only). Lihat
+  [`WDDM-DISPLAY-MODEL.md`](WDDM-DISPLAY-MODEL.md).
 
 ---
 

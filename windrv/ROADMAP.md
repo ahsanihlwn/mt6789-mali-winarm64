@@ -249,12 +249,29 @@ usable:
   the desktop still renders elsewhere. **L4** (desktop rendered by Mali) needs a
   D3D11 UMD because DWM only speaks D3D. See [`DISPLAY-ANDROID.md`](DISPLAY-ANDROID.md) §5.
 
-**Phase 5b — Display miniport for MTK MMSYS/DSI (last)** — *L5, high risk*
-- [ ] Port `mtk_drm_drv`/`mtk_disp_ovl`/`mtk_disp_rdma`/`mtk_dsi` concepts to a
-      WDDM display miniport (VidPn, scan-out, vsync, hotplug).
+**Phase 5b — Display path for MTK MMSYS/DSI (last)** — *L5, high risk*
+
+Two routes, cheap first (see [`WDDM-DISPLAY-MODEL.md`](WDDM-DISPLAY-MODEL.md) §5):
+
+- [ ] **L5b — IddCx indirect display (UMDF).** Register a monitor, receive the
+      composed desktop as an IddCx swapchain, copy into a KMD BO, then program
+      OVL0 → RDMA0 → DSI0 ourselves. User-mode, cannot brick the panel, one copy
+      per frame (~550 MB/s at 1200p60). Proves MMSYS/OVL/DSI from Windows first.
+- [ ] **L5a — full display miniport (VidPn + MPO).** Only route to zero-copy,
+      real vsync and hardware layer offload. MPO is the Windows equivalent of
+      Android HWC: plane 0 = DWM swapchain, planes 1..n = app/video.
+- [ ] **L5c — CASO across adapters** (`CrossAdapterResourceScanout`, WDDM 2.9):
+      render on the Mali render-only adapter, scan out from the MMSYS display
+      adapter, one copy instead of two. Note our panel is 1920x1200, above the
+      CASO minimum of 1920x1080, so we must declare support explicitly or DXGI
+      silently falls back to the two-copy path.
+- [ ] Port `mtk_drm_drv`/`mtk_disp_ovl`/`mtk_disp_rdma`/`mtk_dsi` concepts
+      (VidPn, scan-out, vsync, hotplug).
 - [ ] Per-panel DSI init sequence for P13001L; DSI PHY/PLL tuning; DSC if used.
-- Requires a proven recovery path (WinPE + UART) before first attempt: a bad
-  mode set can leave the panel dark and GOP does not automatically return.
+      Ship as data (extension INF / registry), not as `#define` — same split
+      Qualcomm uses (`qcdx8380.inf` + `qcdxext_crd8380.inf`).
+- Requires a proven recovery path (WinPE + UART) before the first L5a attempt: a
+  bad mode set can leave the panel dark and GOP does not automatically return.
 
 **Phase 6 — Distribution**
 - Dev: test signing. Ship: attestation/WHQL (ARM64 kernel drivers must be

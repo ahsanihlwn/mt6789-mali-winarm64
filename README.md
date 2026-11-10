@@ -88,6 +88,8 @@ windrv/
   MMU-PAGE-TABLES.md     AArch64 4K page tables: both root causes + bisect method
   ROADMAP.md             phases and current validation status
   WDDM-PATH.md           plan for making Windows enumerate Mali as a GPU
+  WDDM-DISPLAY-MODEL.md  how Snapdragon X displays on Windows (MPO, CASO, IddCx)
+                         and why our target is two adapters, not one
   PANVK-SHIM.md          PanVK (Jalur B): panfrost/DRM -> our ABI, gaps, ABI v3
   REFERENCES.md          curated external references
   umd/                   user-mode driver stack (winsys + Vulkan ICD)
@@ -113,6 +115,7 @@ windrv/
     src/                 driver sources
     tools/
       winsdk.ps1         portable toolchain discovery
+      extract-wdk.ps1    unpack the WDK nupkg into external\wdk, verify graphics DDIs
       build-malitest.ps1 builds the user-mode bring-up tool
       malitest.c         bring-up / probe tool (job, MMU, power, regs)
       device/            INSTALL.CMD + TEST.CMD for the target machine
