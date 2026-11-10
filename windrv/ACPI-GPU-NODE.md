@@ -50,6 +50,29 @@ Source of that behaviour:
 
 So the KMD is complete and waiting; the firmware is the only gap.
 
+### Measured inventory of what the firmware publishes today (2026-11-10)
+
+`PlatformTablesDxe.c:84` installs exactly four tables. Their contents were read
+back out of `CoreTables.h` (the generated AML blobs), not inferred:
+
+| Table | Size | Contents |
+| --- | --- | --- |
+| `mDsdt` | 329 B | `\_SB_` with `CP00`-`CP07` only (`_HID ACPI0007`, `_UID`, `_STA`). Its source `DSDT.asl:1` calls itself *"Offline draft: core CPUs only; not a complete Windows platform"*. |
+| `mFadt` | 276 B | FACP, reduced-hardware, flags 0. |
+| `mMadt` | 724 B | 8x GICC (len 80) + 1x GICD (len 24) + 1x GICR (len 16); header `Length` = 724, GICv3. |
+| `mGtdt` | 104 B | generic timer only. |
+
+Two consequences worth stating plainly:
+
+- There is **no** GPU / Mali / `mfgcfg` / `G3D` / `mmsys` node, and no
+  `Memory32Fixed` or `Interrupt` object for one, in any table the platform
+  builds. There is also no `PPTT`, `IORT`, `MCFG` or `SPCR`.
+- The MADT carries **no GSI/GSIV (type 0/1/2/3) entries at all**, so nothing else
+  in this platform claims SPIs 396-400. The only `mali` strings anywhere in the
+  firmware repo are inside an unrelated device-tree blob for a *different* SoC
+  (`Platform/FPlus/T1100Pkg/Blob/mt6771-fplus-t1100.dtb`, Mali at `0x13040000`
+  on MT6771). That blob is a node-shape reference, not an MT6789 ACPI node.
+
 ---
 
 ## 3. The contract
@@ -207,11 +230,12 @@ Before/after reference numbers today: `job done 0 error 0`, `IRQ lines 0`.
   to some other device would either spin or steal another driver's interrupt.
   `MaliIrq.c:125-132` mitigates this by checking the line's own `STATUS`
   register and returning `FALSE` when it reads 0, but the correct number is
-  still mandatory. Confirm the MADT's GIC distributor `Global System Interrupt
-  Base` is 0 (so SPI `n` → GSIV `n + 32`).
-- **GSIV base assumption.** If the platform ever declares a non-zero GSI base,
-  every value in §3 shifts by that base. Verify against the built MADT before
-  flashing.
+  still mandatory.
+- **GSIV base is 0 - measured, not assumed.** The built MADT's GICD entry reads
+  Global System Interrupt Base `0` (GICv3; distributor `0x0C000000`,
+  redistributor `0x0C040000`), so SPI `n` → GSIV `n + 32` holds for this image
+  and SPIs 396-400 are GSIVs 428-432. Re-check that number if the GIC descriptor
+  ever changes; otherwise every value in §3 shifts by the base.
 - **Order is part of the contract.** GPU, MMU, JOB — not sorted by number and not
   interchangeable. `MaliIrq.c:22-25`.
 - **Do not mark it a display device.** No `_DOD`/display `_HID`; this is a
